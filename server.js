@@ -1,4 +1,4 @@
-// server.js - РОБОЧА ВЕРСІЯ З ДІАГНОСТИКОЮ
+// server.js - ВЕРСІЯ ДЛЯ ПОРТУ 5000
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -11,26 +11,18 @@ app.use(express.json());
 // ===========================================
 //           РОБОТА З ФАЙЛАМИ
 // ===========================================
-const DB_PATH = '/tmp/db.json'; // ← ОДРАЗУ ВКАЗУЄМО ШЛЯХ ДО /tmp
+const DB_PATH = '/tmp/db.json';
 
-console.log('='.repeat(50));
-console.log('🚀 ЗАПУСК СЕРВЕРА');
+console.log('\n' + '='.repeat(50));
+console.log('🚀 ЗАПУСК НОВОГО СЕРВЕРА');
 console.log('='.repeat(50));
 console.log('📁 Шлях до БД:', DB_PATH);
-
-// Спробуємо одразу створити файл, щоб перевірити права
-try {
-  fs.writeFileSync(DB_PATH, JSON.stringify({ users: [], expenses: [], goals: [] }, null, 2));
-  console.log('✅ Файл БД успішно створено при старті');
-} catch (error) {
-  console.log('❌ ПОМИЛКА: Не вдалося створити файл БД:', error.message);
-}
 
 // Функція читання бази
 function readDB() {
   try {
     if (!fs.existsSync(DB_PATH)) {
-      console.log('📂 Файл БД не існує, створюємо новий');
+      console.log('📂 Файл БД не існує, створюємо...');
       const defaultDB = { users: [], expenses: [], goals: [] };
       fs.writeFileSync(DB_PATH, JSON.stringify(defaultDB, null, 2));
       return defaultDB;
@@ -50,7 +42,7 @@ function writeDB(data) {
     console.log('✅ БД збережено');
     return true;
   } catch (error) {
-    console.log('❌ ПОМИЛКА ЗАПИСУ БД:', error.message);
+    console.log('❌ ПОМИЛКА ЗАПИСУ:', error.message);
     return false;
   }
 }
@@ -61,34 +53,43 @@ let db = readDB();
 //           МАРШРУТИ
 // ===========================================
 
+// ГОЛОВНА СТОРІНКА
 app.get('/', (req, res) => {
   res.json({
-    message: "Сервер Finance AI працює!",
+    message: "🚀 НОВИЙ СЕРВЕР Finance AI працює!",
+    version: "2.0",
+    port: PORT,
     dbPath: DB_PATH,
-    dbExists: fs.existsSync(DB_PATH),
     stats: {
       users: db.users.length,
       expenses: db.expenses.length,
       goals: db.goals.length
-    }
+    },
+    time: new Date().toISOString()
   });
 });
 
-// ТЕСТОВИЙ МАРШРУТ ДЛЯ ПЕРЕВІРКИ ЗАПИСУ
+// ТЕСТ ЗАПИСУ
 app.get('/api/test-write', (req, res) => {
   const testFile = '/tmp/test.txt';
   try {
-    fs.writeFileSync(testFile, 'test');
-    res.json({ success: true, message: 'Запис працює' });
+    fs.writeFileSync(testFile, 'test ' + Date.now());
+    res.json({ 
+      success: true, 
+      message: '✅ Запис працює!',
+      path: testFile
+    });
   } catch (error) {
-    res.json({ success: false, error: error.message });
+    res.json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
 // РЕЄСТРАЦІЯ
 app.post('/api/auth/register', (req, res) => {
   console.log('\n📝 РЕЄСТРАЦІЯ');
-  
   const { email, password, name } = req.body;
   
   if (!email || !password || !name) {
@@ -113,7 +114,7 @@ app.post('/api/auth/register', (req, res) => {
   db.users.push(newUser);
   
   if (!writeDB(db)) {
-    return res.status(500).json({ error: "Помилка збереження на сервері" });
+    return res.status(500).json({ error: "Помилка збереження" });
   }
   
   console.log(`✅ Користувача додано: ${email}`);
@@ -151,10 +152,82 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
-// ІНШІ МАРШРУТИ (expenses, goals) - залишаємо як є
-// ... (сюди можна додати код для /expenses та /goals з минулих версій)
+// ОТРИМАННЯ ВСІХ ВИТРАТ
+app.get('/api/expenses', (req, res) => {
+  db = readDB();
+  res.json({ success: true, expenses: db.expenses });
+});
 
-const PORT = process.env.PORT || 5000;
+// ДОДАВАННЯ ВИТРАТИ
+app.post('/api/expenses', (req, res) => {
+  db = readDB();
+  const newExpense = {
+    id: `expense_${Date.now()}`,
+    ...req.body,
+    date: req.body.date || new Date().toISOString()
+  };
+  db.expenses.push(newExpense);
+  writeDB(db);
+  res.json({ success: true, expense: newExpense });
+});
+
+// ВИДАЛЕННЯ ВИТРАТИ
+app.delete('/api/expenses/:id', (req, res) => {
+  db = readDB();
+  db.expenses = db.expenses.filter(e => e.id !== req.params.id);
+  writeDB(db);
+  res.json({ success: true });
+});
+
+// СТАТИСТИКА
+app.get('/api/expenses/stats', (req, res) => {
+  db = readDB();
+  const totalCount = db.expenses.length;
+  const totalAmount = db.expenses.reduce((sum, e) => sum + e.amount, 0);
+  const categories = new Set(db.expenses.map(e => e.category)).size;
+  res.json({
+    success: true,
+    stats: { totalCount, totalAmount, categoryCount: categories }
+  });
+});
+
+// ОТРИМАННЯ ВСІХ ЦІЛЕЙ
+app.get('/api/goals', (req, res) => {
+  db = readDB();
+  res.json({ success: true, goals: db.goals });
+});
+
+// ДОДАВАННЯ ЦІЛІ
+app.post('/api/goals', (req, res) => {
+  db = readDB();
+  const newGoal = {
+    id: `goal_${Date.now()}`,
+    ...req.body,
+    imageEmoji: req.body.imageEmoji || "💰"
+  };
+  db.goals.push(newGoal);
+  writeDB(db);
+  res.json({ success: true, goal: newGoal });
+});
+
+// ВИДАЛЕННЯ ЦІЛІ
+app.delete('/api/goals/:id', (req, res) => {
+  db = readDB();
+  db.goals = db.goals.filter(g => g.id !== req.params.id);
+  writeDB(db);
+  res.json({ success: true });
+});
+
+// ===========================================
+//           ЗАПУСК СЕРВЕРА
+// ===========================================
+
+const PORT = process.env.PORT || 5000; // ЗМІНЕНО на 5000!
 app.listen(PORT, () => {
-  console.log(`✅ Сервер слухає порт ${PORT}`);
+  console.log('\n' + '='.repeat(50));
+  console.log(`✅ НОВИЙ СЕРВЕР ЗАПУЩЕНО на порту ${PORT}`);
+  console.log(`📍 https://financeai-app-2026-production.up.railway.app`);
+  console.log(`📁 База даних: ${DB_PATH}`);
+  console.log(`📊 Користувачів: ${db.users.length}`);
+  console.log('='.repeat(50) + '\n');
 });
