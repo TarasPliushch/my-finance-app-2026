@@ -154,7 +154,7 @@ app.post('/api/auth/login', (req, res) => {
 // ІНШІ МАРШРУТИ (expenses, goals) - залишаємо як є
 // ... (сюди можна додати код для /expenses та /goals з минулих версій)
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Сервер слухає порт ${PORT}`);
 });
