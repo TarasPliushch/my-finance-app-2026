@@ -1,4 +1,4 @@
-// server.js - ОНОВЛЕНА ВЕРСІЯ З TOKEN
+// server.js - ПОВНА ВЕРСІЯ З ВСІМА ДАНИМИ
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -11,67 +11,70 @@ const DB_PATH = '/tmp/db.json';
 const PORT = process.env.PORT || 5000;
 
 console.log('\n' + '='.repeat(50));
-console.log('🚀 ЗАПУСК СЕРВЕРА');
+console.log('🚀 СЕРВЕР FINANCE AI');
 console.log('='.repeat(50));
 
 // Ініціалізація бази даних
-if (!fs.existsSync(DB_PATH)) {
-  fs.writeFileSync(DB_PATH, JSON.stringify({ users: [] }, null, 2));
-  console.log('✅ Базу даних створено');
+function initDB() {
+  return {
+    users: [],
+    expenses: [],
+    goals: [],
+    chatSessions: [],
+    chatMessages: []
+  };
 }
 
-// Функція для читання бази
+// Читання бази
 function readDB() {
-  const data = fs.readFileSync(DB_PATH, 'utf8');
-  return JSON.parse(data);
+  try {
+    if (!fs.existsSync(DB_PATH)) {
+      fs.writeFileSync(DB_PATH, JSON.stringify(initDB(), null, 2));
+      return initDB();
+    }
+    const data = fs.readFileSync(DB_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.log('❌ Помилка читання БД:', error.message);
+    return initDB();
+  }
 }
 
-// Функція для запису бази
+// Запис в базу
 function writeDB(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    return true;
+  } catch (error) {
+    console.log('❌ Помилка запису БД:', error.message);
+    return false;
+  }
 }
-
-// ГОЛОВНА СТОРІНКА
-app.get('/', (req, res) => {
-  const data = readDB();
-  res.json({
-    message: 'Сервер Finance AI працює!',
-    users: data.users.length,
-    time: new Date().toISOString()
-  });
-});
-
-// ТЕСТОВИЙ МАРШРУТ
-app.get('/api/test', (req, res) => {
-  res.json({ success: true, message: 'Тестовий маршрут працює' });
-});
 
 // ===========================================
 //           МАРШРУТИ АВТОРИЗАЦІЇ
 // ===========================================
 
-// РЕЄСТРАЦІЯ - ВИПРАВЛЕНО!
+// РЕЄСТРАЦІЯ
 app.post('/api/auth/register', (req, res) => {
-  console.log('📝 Реєстрація:', req.body);
+  console.log('📝 Реєстрація:', req.body.email);
   const { email, password, name } = req.body;
   
   if (!email || !password || !name) {
     return res.status(400).json({ error: 'Всі поля обов\'язкові' });
   }
   
-  const data = readDB();
+  const db = readDB();
   
-  // Перевірка чи email вже існує
-  if (data.users.some(u => u.email === email)) {
-    return res.status(400).json({ error: 'Користувач з таким email вже існує' });
+  if (db.users.some(u => u.email === email)) {
+    return res.status(400).json({ error: 'Email вже використовується' });
   }
   
-  // Створюємо нового користувача
   const newUser = {
     id: 'user_' + Date.now(),
-    email: email,
-    name: name,
-    password: password, // В реальному проекті треба хешувати!
+    email,
+    name,
+    password,
     avatarEmoji: "👤",
     currency: "₴",
     monthlyBudget: 0,
@@ -80,15 +83,11 @@ app.post('/api/auth/register', (req, res) => {
     createdAt: new Date().toISOString()
   };
   
-  data.users.push(newUser);
-  writeDB(data);
+  db.users.push(newUser);
+  writeDB(db);
   
-  console.log(`✅ Користувача додано: ${email}`);
-  
-  // Повертаємо дані без пароля
   const { password: _, ...userWithoutPassword } = newUser;
   
-  // ВІДПОВІДЬ З TOKEN - те, що очікує додаток!
   res.json({
     success: true,
     token: 'token_' + Date.now(),
@@ -96,103 +95,89 @@ app.post('/api/auth/register', (req, res) => {
   });
 });
 
-// ВХІД - ВИПРАВЛЕНО!
+// ВХІД
 app.post('/api/auth/login', (req, res) => {
-  console.log('🔑 Вхід:', req.body);
+  console.log('🔑 Вхід:', req.body.email);
   const { email, password } = req.body;
   
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email та пароль обов\'язкові' });
-  }
-  
-  const data = readDB();
-  const user = data.users.find(u => u.email === email);
+  const db = readDB();
+  const user = db.users.find(u => u.email === email);
   
   if (!user || user.password !== password) {
     return res.status(401).json({ error: 'Невірний email або пароль' });
   }
   
-  console.log(`✅ Успішний вхід: ${email}`);
-  
   const { password: _, ...userWithoutPassword } = user;
   
-  // ВІДПОВІДЬ З TOKEN
   res.json({
     success: true,
     token: 'token_' + Date.now(),
     user: userWithoutPassword
   });
-});
-
-// ОТРИМАННЯ КОРИСТУВАЧА
-app.get('/api/auth/me', (req, res) => {
-  console.log('👤 Отримання користувача');
-  
-  // Отримуємо токен з заголовка
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'Не авторизовано' });
-  }
-  
-  const data = readDB();
-  
-  // Повертаємо останнього користувача для простоти
-  if (data.users.length > 0) {
-    const lastUser = data.users[data.users.length - 1];
-    const { password: _, ...userWithoutPassword } = lastUser;
-    res.json({ user: userWithoutPassword });
-  } else {
-    res.json({ user: null });
-  }
 });
 
 // ===========================================
 //           МАРШРУТИ ВИТРАТ
 // ===========================================
 
-// ОТРИМАННЯ ВСІХ ВИТРАТ
+// ОТРИМАННЯ ВСІХ ВИТРАТ КОРИСТУВАЧА
 app.get('/api/expenses', (req, res) => {
-  const data = readDB();
-  if (!data.expenses) data.expenses = [];
-  res.json({ success: true, expenses: data.expenses });
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  const userExpenses = db.expenses.filter(e => e.userId === userId);
+  
+  res.json({ success: true, expenses: userExpenses });
 });
 
 // ДОДАВАННЯ ВИТРАТИ
 app.post('/api/expenses', (req, res) => {
-  const data = readDB();
-  if (!data.expenses) data.expenses = [];
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
   
   const newExpense = {
     id: 'expense_' + Date.now(),
+    userId,
     ...req.body,
     date: req.body.date || new Date().toISOString()
   };
   
-  data.expenses.push(newExpense);
-  writeDB(data);
+  if (!db.expenses) db.expenses = [];
+  db.expenses.push(newExpense);
+  writeDB(db);
   
   res.json({ success: true, expense: newExpense });
 });
 
 // ВИДАЛЕННЯ ВИТРАТИ
 app.delete('/api/expenses/:id', (req, res) => {
-  const data = readDB();
-  data.expenses = (data.expenses || []).filter(e => e.id !== req.params.id);
-  writeDB(data);
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  db.expenses = db.expenses.filter(e => e.id !== req.params.id && e.userId === userId);
+  writeDB(db);
+  
   res.json({ success: true });
 });
 
-// СТАТИСТИКА
+// СТАТИСТИКА ВИТРАТ
 app.get('/api/expenses/stats', (req, res) => {
-  const data = readDB();
-  const expenses = data.expenses || [];
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  const userExpenses = db.expenses.filter(e => e.userId === userId);
   
   res.json({
     success: true,
     stats: {
-      totalCount: expenses.length,
-      totalAmount: expenses.reduce((sum, e) => sum + (e.amount || 0), 0),
-      categoryCount: new Set(expenses.map(e => e.category)).size
+      totalCount: userExpenses.length,
+      totalAmount: userExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
+      categoryCount: new Set(userExpenses.map(e => e.category)).size
     }
   });
 });
@@ -201,36 +186,162 @@ app.get('/api/expenses/stats', (req, res) => {
 //           МАРШРУТИ ЦІЛЕЙ
 // ===========================================
 
+// ОТРИМАННЯ ВСІХ ЦІЛЕЙ КОРИСТУВАЧА
 app.get('/api/goals', (req, res) => {
-  const data = readDB();
-  if (!data.goals) data.goals = [];
-  res.json({ success: true, goals: data.goals });
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  const userGoals = db.goals.filter(g => g.userId === userId);
+  
+  res.json({ success: true, goals: userGoals });
 });
 
+// ДОДАВАННЯ ЦІЛІ
 app.post('/api/goals', (req, res) => {
-  const data = readDB();
-  if (!data.goals) data.goals = [];
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
   
   const newGoal = {
     id: 'goal_' + Date.now(),
+    userId,
     ...req.body,
     imageEmoji: req.body.imageEmoji || "💰"
   };
   
-  data.goals.push(newGoal);
-  writeDB(data);
+  if (!db.goals) db.goals = [];
+  db.goals.push(newGoal);
+  writeDB(db);
   
   res.json({ success: true, goal: newGoal });
 });
 
+// ВИДАЛЕННЯ ЦІЛІ
+app.delete('/api/goals/:id', (req, res) => {
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  db.goals = db.goals.filter(g => g.id !== req.params.id && g.userId === userId);
+  writeDB(db);
+  
+  res.json({ success: true });
+});
+
 // ===========================================
-//           ЗАПУСК СЕРВЕРА
+//           МАРШРУТИ ЧАТУ
 // ===========================================
 
+// ОТРИМАННЯ ВСІХ СЕСІЙ ЧАТУ
+app.get('/api/chat/sessions', (req, res) => {
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
+  
+  res.json({ success: true, sessions: userSessions });
+});
+
+// СТВОРЕННЯ НОВОЇ СЕСІЇ
+app.post('/api/chat/sessions', (req, res) => {
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  
+  const newSession = {
+    id: 'session_' + Date.now(),
+    userId,
+    name: req.body.name || 'Новий чат',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  if (!db.chatSessions) db.chatSessions = [];
+  db.chatSessions.push(newSession);
+  writeDB(db);
+  
+  res.json({ success: true, session: newSession });
+});
+
+// ОТРИМАННЯ ПОВІДОМЛЕНЬ СЕСІЇ
+app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  const messages = (db.chatMessages || []).filter(m => 
+    m.sessionId === req.params.sessionId && m.userId === userId
+  );
+  
+  res.json({ success: true, messages });
+});
+
+// ДОДАВАННЯ ПОВІДОМЛЕННЯ
+app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  
+  const newMessage = {
+    id: 'msg_' + Date.now(),
+    userId,
+    sessionId: req.params.sessionId,
+    ...req.body,
+    createdAt: new Date().toISOString()
+  };
+  
+  if (!db.chatMessages) db.chatMessages = [];
+  db.chatMessages.push(newMessage);
+  
+  // Оновлюємо час сесії
+  const sessionIndex = (db.chatSessions || []).findIndex(s => s.id === req.params.sessionId);
+  if (sessionIndex !== -1) {
+    db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
+  }
+  
+  writeDB(db);
+  
+  res.json({ success: true, message: newMessage });
+});
+
+// ВИДАЛЕННЯ СЕСІЇ
+app.delete('/api/chat/sessions/:sessionId', (req, res) => {
+  const userId = req.headers['user-id'];
+  if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+  
+  const db = readDB();
+  db.chatSessions = (db.chatSessions || []).filter(s => s.id !== req.params.sessionId && s.userId === userId);
+  db.chatMessages = (db.chatMessages || []).filter(m => m.sessionId !== req.params.sessionId && m.userId === userId);
+  writeDB(db);
+  
+  res.json({ success: true });
+});
+
+// ===========================================
+//           ТЕСТОВИЙ МАРШРУТ
+// ===========================================
+
+app.get('/', (req, res) => {
+  const db = readDB();
+  res.json({
+    message: '🚀 СЕРВЕР FINANCE AI',
+    stats: {
+      users: db.users.length,
+      expenses: (db.expenses || []).length,
+      goals: (db.goals || []).length,
+      chatSessions: (db.chatSessions || []).length,
+      chatMessages: (db.chatMessages || []).length
+    },
+    time: new Date().toISOString()
+  });
+});
+
 app.listen(PORT, () => {
-  console.log('='.repeat(50));
-  console.log(`✅ СЕРВЕР ЗАПУЩЕНО НА ПОРТУ ${PORT}`);
+  console.log(`✅ Сервер запущено на порту ${PORT}`);
   console.log(`📍 https://financeai-app-2026-production.up.railway.app`);
-  console.log(`📁 База даних: ${DB_PATH}`);
-  console.log('='.repeat(50) + '\n');
 });
