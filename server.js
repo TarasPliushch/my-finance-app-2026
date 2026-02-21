@@ -1,10 +1,49 @@
-// server.js - ПОВНИЙ КОД СЕРВЕРА
+// server.js - ПОВНИЙ КОД ЗІ ЗБЕРЕЖЕННЯМ
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// ===========================================
+//           РОБОТА З ФАЙЛАМИ (БАЗА ДАНИХ)
+// ===========================================
+
+const DB_PATH = path.join(__dirname, 'db.json');
+
+// Ініціалізація бази даних
+function initDB() {
+  if (!fs.existsSync(DB_PATH)) {
+    const initialDB = {
+      users: [],
+      expenses: [],
+      goals: []
+    };
+    fs.writeFileSync(DB_PATH, JSON.stringify(initialDB, null, 2));
+    return initialDB;
+  }
+  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+}
+
+// Читання бази даних
+function readDB() {
+  try {
+    return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+  } catch (error) {
+    return initDB();
+  }
+}
+
+// Запис в базу даних
+function writeDB(data) {
+  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+}
+
+// Ініціалізуємо базу при старті
+let db = initDB();
 
 // ===========================================
 //           ТЕСТОВИЙ МАРШРУТ
@@ -12,19 +51,12 @@ app.use(express.json());
 app.get('/', (req, res) => {
   res.json({ 
     message: "Сервер Finance AI працює!",
-    time: new Date().toISOString(),
-    endpoints: [
-      "POST /api/auth/register",
-      "POST /api/auth/login",
-      "GET /api/auth/me",
-      "GET /api/expenses",
-      "POST /api/expenses",
-      "DELETE /api/expenses/:id",
-      "GET /api/expenses/stats",
-      "GET /api/goals",
-      "POST /api/goals",
-      "DELETE /api/goals/:id"
-    ]
+    stats: {
+      users: db.users.length,
+      expenses: db.expenses.length,
+      goals: db.goals.length
+    },
+    time: new Date().toISOString()
   });
 });
 
@@ -44,11 +76,23 @@ app.post('/api/auth/register', (req, res) => {
     });
   }
   
-  // Імітація збереження в базу даних
+  // Оновлюємо базу даних
+  db = readDB();
+  
+  // Перевірка чи email вже існує
+  const existingUser = db.users.find(u => u.email === email);
+  if (existingUser) {
+    return res.status(400).json({ 
+      error: "Користувач з таким email вже існує" 
+    });
+  }
+  
+  // Створюємо нового користувача
   const newUser = {
     id: "user_" + Date.now(),
     email: email,
     name: name,
+    password: password, // В реальному проекті треба хешувати!
     avatarEmoji: "👤",
     currency: "₴",
     monthlyBudget: 0,
@@ -57,10 +101,19 @@ app.post('/api/auth/register', (req, res) => {
     createdAt: new Date().toISOString()
   };
   
+  // Додаємо в базу
+  db.users.push(newUser);
+  writeDB(db);
+  
+  console.log(`✅ Зареєстровано нового користувача: ${email}`);
+  
+  // Повертаємо дані без пароля
+  const { password: _, ...userWithoutPassword } = newUser;
+  
   res.json({
     success: true,
     token: "token_" + Date.now(),
-    user: newUser
+    user: userWithoutPassword
   });
 });
 
@@ -76,21 +129,28 @@ app.post('/api/auth/login', (req, res) => {
     });
   }
   
-  // Імітація перевірки в базі даних
+  // Оновлюємо базу даних
+  db = readDB();
+  
+  // Шукаємо користувача
+  const user = db.users.find(u => u.email === email);
+  
+  // Перевіряємо пароль (в реальному проекті треба хешування)
+  if (!user || user.password !== password) {
+    return res.status(401).json({ 
+      error: "Невірний email або пароль" 
+    });
+  }
+  
+  console.log(`✅ Успішний вхід: ${email}`);
+  
+  // Повертаємо дані без пароля
+  const { password: _, ...userWithoutPassword } = user;
+  
   res.json({
     success: true,
     token: "token_" + Date.now(),
-    user: {
-      id: "user_12345",
-      email: email,
-      name: email.split('@')[0] || "Користувач",
-      avatarEmoji: "👤",
-      currency: "₴",
-      monthlyBudget: 0,
-      notificationsEnabled: true,
-      theme: "system",
-      createdAt: new Date().toISOString()
-    }
+    user: userWithoutPassword
   });
 });
 
@@ -104,52 +164,38 @@ app.get('/api/auth/me', (req, res) => {
     return res.status(401).json({ error: "Не авторизовано" });
   }
   
-  res.json({
-    user: {
-      id: "user_12345",
-      email: "user@example.com",
-      name: "Тестовий Користувач",
-      avatarEmoji: "👤",
-      currency: "₴",
-      monthlyBudget: 0,
-      notificationsEnabled: true,
-      theme: "system",
-      createdAt: new Date().toISOString()
-    }
-  });
+  // Оновлюємо базу даних
+  db = readDB();
+  
+  // В реальному проекті тут треба декодувати токен
+  // Поки що повертаємо першого користувача для тесту
+  if (db.users.length > 0) {
+    const { password: _, ...userWithoutPassword } = db.users[0];
+    res.json({ user: userWithoutPassword });
+  } else {
+    res.json({ user: null });
+  }
 });
 
 // ===========================================
 //           МАРШРУТИ ВИТРАТ
 // ===========================================
 
-// Тимчасова база даних в пам'яті
-let expenses = [
-  {
-    id: "1",
-    title: "Продукти",
-    amount: 1500,
-    category: "Їжа",
-    date: new Date().toISOString(),
-    notes: "Супермаркет"
-  },
-  {
-    id: "2",
-    title: "Таксі",
-    amount: 250,
-    category: "Транспорт",
-    date: new Date().toISOString(),
-    notes: null
-  }
-];
-
 // ОТРИМАННЯ ВСІХ ВИТРАТ
 app.get('/api/expenses', (req, res) => {
   console.log('📊 Отримання витрат');
   
+  db = readDB();
+  
+  // Отримуємо userId з токена (тут спрощено)
+  const userId = db.users[0]?.id || 'user_12345';
+  
+  // Фільтруємо витрати поточного користувача
+  const userExpenses = db.expenses.filter(e => e.userId === userId);
+  
   res.json({
     success: true,
-    expenses: expenses
+    expenses: userExpenses
   });
 });
 
@@ -158,8 +204,14 @@ app.post('/api/expenses', (req, res) => {
   console.log('➕ Додавання витрати:', req.body);
   const { title, amount, category, date, notes } = req.body;
   
+  db = readDB();
+  
+  // Отримуємо userId з токена (тут спрощено)
+  const userId = db.users[0]?.id || 'user_12345';
+  
   const newExpense = {
     id: "expense_" + Date.now(),
+    userId: userId,
     title: title || "Нова витрата",
     amount: amount || 0,
     category: category || "Інше",
@@ -167,7 +219,8 @@ app.post('/api/expenses', (req, res) => {
     notes: notes || null
   };
   
-  expenses.unshift(newExpense); // Додаємо в початок
+  db.expenses.push(newExpense);
+  writeDB(db);
   
   res.json({
     success: true,
@@ -180,7 +233,9 @@ app.delete('/api/expenses/:id', (req, res) => {
   console.log('🗑️ Видалення витрати:', req.params.id);
   const { id } = req.params;
   
-  expenses = expenses.filter(e => e.id !== id);
+  db = readDB();
+  db.expenses = db.expenses.filter(e => e.id !== id);
+  writeDB(db);
   
   res.json({
     success: true,
@@ -192,9 +247,17 @@ app.delete('/api/expenses/:id', (req, res) => {
 app.get('/api/expenses/stats', (req, res) => {
   console.log('📈 Статистика');
   
-  const totalCount = expenses.length;
-  const totalAmount = expenses.reduce((sum, e) => sum + e.amount, 0);
-  const categories = new Set(expenses.map(e => e.category)).size;
+  db = readDB();
+  
+  // Отримуємо userId з токена (тут спрощено)
+  const userId = db.users[0]?.id || 'user_12345';
+  
+  // Фільтруємо витрати поточного користувача
+  const userExpenses = db.expenses.filter(e => e.userId === userId);
+  
+  const totalCount = userExpenses.length;
+  const totalAmount = userExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const categories = new Set(userExpenses.map(e => e.category)).size;
   
   res.json({
     success: true,
@@ -210,24 +273,21 @@ app.get('/api/expenses/stats', (req, res) => {
 //           МАРШРУТИ ЦІЛЕЙ
 // ===========================================
 
-let goals = [
-  {
-    id: "1",
-    name: "Купити телефон",
-    targetAmount: 20000,
-    currentAmount: 5000,
-    deadline: null,
-    imageEmoji: "📱"
-  }
-];
-
 // ОТРИМАННЯ ВСІХ ЦІЛЕЙ
 app.get('/api/goals', (req, res) => {
   console.log('🎯 Отримання цілей');
   
+  db = readDB();
+  
+  // Отримуємо userId з токена (тут спрощено)
+  const userId = db.users[0]?.id || 'user_12345';
+  
+  // Фільтруємо цілі поточного користувача
+  const userGoals = db.goals.filter(g => g.userId === userId);
+  
   res.json({
     success: true,
-    goals: goals
+    goals: userGoals
   });
 });
 
@@ -236,8 +296,14 @@ app.post('/api/goals', (req, res) => {
   console.log('➕ Додавання цілі:', req.body);
   const { name, targetAmount, currentAmount, deadline, imageEmoji } = req.body;
   
+  db = readDB();
+  
+  // Отримуємо userId з токена (тут спрощено)
+  const userId = db.users[0]?.id || 'user_12345';
+  
   const newGoal = {
     id: "goal_" + Date.now(),
+    userId: userId,
     name: name || "Нова ціль",
     targetAmount: targetAmount || 1000,
     currentAmount: currentAmount || 0,
@@ -245,7 +311,8 @@ app.post('/api/goals', (req, res) => {
     imageEmoji: imageEmoji || "💰"
   };
   
-  goals.push(newGoal);
+  db.goals.push(newGoal);
+  writeDB(db);
   
   res.json({
     success: true,
@@ -258,7 +325,9 @@ app.delete('/api/goals/:id', (req, res) => {
   console.log('🗑️ Видалення цілі:', req.params.id);
   const { id } = req.params;
   
-  goals = goals.filter(g => g.id !== id);
+  db = readDB();
+  db.goals = db.goals.filter(g => g.id !== id);
+  writeDB(db);
   
   res.json({
     success: true,
@@ -274,4 +343,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Сервер запущено на порту ${PORT}`);
   console.log(`📍 https://financeai-app-2026-production.up.railway.app`);
+  console.log(`💾 Дані зберігаються у файлі db.json`);
 });
