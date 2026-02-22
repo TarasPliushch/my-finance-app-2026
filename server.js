@@ -1,4 +1,3 @@
-// server.js - ПОВНИЙ РОБОЧИЙ СЕРВЕР
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -11,6 +10,17 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ===========================================
+//           ТЕСТОВИЙ МАРШРУТ (НА ПОЧАТКУ)
+// ===========================================
+app.get('/', (req, res) => {
+    res.json({ 
+        message: '🚀 СЕРВЕР FINANCE AI ПРАЦЮЄ',
+        time: new Date().toISOString(),
+        status: 'ok'
+    });
+});
 
 // ===========================================
 //           НАЛАШТУВАННЯ
@@ -40,7 +50,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const allowedTypes = /jpeg|jpg|png|gif/;
         const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
@@ -48,7 +58,7 @@ const upload = multer({
         if (mimetype && extname) {
             return cb(null, true);
         } else {
-            cb(new Error('Дозволені тільки зображення (jpeg, jpg, png, gif)'));
+            cb(new Error('Дозволені тільки зображення'));
         }
     }
 });
@@ -66,7 +76,6 @@ function initDB() {
     };
 }
 
-// Читання бази
 function readDB() {
     try {
         if (!fs.existsSync(DB_PATH)) {
@@ -81,7 +90,6 @@ function readDB() {
     }
 }
 
-// Запис в базу
 function writeDB(data) {
     try {
         fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
@@ -111,7 +119,6 @@ function verifyToken(token) {
 //           МАРШРУТИ АВТОРИЗАЦІЇ
 // ===========================================
 
-// РЕЄСТРАЦІЯ
 app.post('/api/auth/register', async (req, res) => {
     console.log('📝 Реєстрація:', req.body.email);
     const { email, password, name } = req.body;
@@ -160,7 +167,6 @@ app.post('/api/auth/register', async (req, res) => {
     });
 });
 
-// ВХІД
 app.post('/api/auth/login', async (req, res) => {
     console.log('🔑 Вхід:', req.body.email);
     const { email, password } = req.body;
@@ -190,7 +196,6 @@ app.post('/api/auth/login', async (req, res) => {
     });
 });
 
-// ОТРИМАННЯ ПОТОЧНОГО КОРИСТУВАЧА
 app.get('/api/auth/me', (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
@@ -215,7 +220,6 @@ app.get('/api/auth/me', (req, res) => {
     res.json({ user: userWithoutPassword });
 });
 
-// ОНОВЛЕННЯ ПРОФІЛЮ
 app.put('/api/auth/profile', upload.single('avatar'), (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
@@ -371,10 +375,9 @@ app.delete('/api/goals/:id', (req, res) => {
 });
 
 // ===========================================
-//           МАРШРУТИ ЧАТІВ (ВИПРАВЛЕНО)
+//           МАРШРУТИ ЧАТІВ
 // ===========================================
 
-// ОТРИМАННЯ ВСІХ СЕСІЙ
 app.get('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -382,7 +385,6 @@ app.get('/api/chat/sessions', (req, res) => {
     const db = readDB();
     const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
     
-    // Форматуємо сесії з усіма потрібними полями
     const formattedSessions = userSessions.map(s => ({
         id: s.id,
         name: s.name,
@@ -395,7 +397,6 @@ app.get('/api/chat/sessions', (req, res) => {
     res.json({ success: true, sessions: formattedSessions });
 });
 
-// СТВОРЕННЯ НОВОЇ СЕСІЇ (ВИПРАВЛЕНО)
 app.post('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -418,7 +419,6 @@ app.post('/api/chat/sessions', (req, res) => {
     res.json({ success: true, session: newSession });
 });
 
-// ВИДАЛЕННЯ СЕСІЇ
 app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
@@ -432,7 +432,6 @@ app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     res.json({ success: true });
 });
 
-// ОТРИМАННЯ ПОВІДОМЛЕНЬ СЕСІЇ
 app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
@@ -444,7 +443,6 @@ app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
     res.json({ success: true, messages: messages });
 });
 
-// ДОДАВАННЯ ПОВІДОМЛЕННЯ
 app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
@@ -463,7 +461,6 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     if (!db.chatMessages) db.chatMessages = [];
     db.chatMessages.push(newMessage);
     
-    // Оновлюємо сесію
     const sessionIndex = (db.chatSessions || []).findIndex(s => s.id === sessionId);
     if (sessionIndex !== -1) {
         db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
@@ -505,34 +502,6 @@ app.get('/api/user/stats', (req, res) => {
 });
 
 // ===========================================
-//           ТЕСТОВИЙ МАРШРУТ
-// ===========================================
-
-app.get('/', (req, res) => {
-    const db = readDB();
-    res.json({
-        message: '🚀 СЕРВЕР FINANCE AI',
-        version: '2.0',
-        features: {
-            auth: true,
-            expenses: true,
-            goals: true,
-            chats: true,
-            profiles: true,
-            statistics: true
-        },
-        stats: {
-            users: db.users.length,
-            expenses: (db.expenses || []).length,
-            goals: (db.goals || []).length,
-            chatSessions: (db.chatSessions || []).length,
-            chatMessages: (db.chatMessages || []).length
-        },
-        time: new Date().toISOString()
-    });
-});
-
-// ===========================================
 //           СТАТИЧНІ ФАЙЛИ (АВАТАРКИ)
 // ===========================================
 app.use('/uploads', express.static('/tmp/uploads'));
@@ -544,6 +513,6 @@ app.use('/uploads', express.static('/tmp/uploads'));
 app.listen(PORT, () => {
     console.log('='.repeat(50));
     console.log(`✅ СЕРВЕР ЗАПУЩЕНО НА ПОРТУ ${PORT}`);
-    console.log(`📍 https://financeai-app-2026-production.up.railway.app`);
+    console.log(`📍 http://localhost:${PORT}`);
     console.log('='.repeat(50));
 });
