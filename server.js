@@ -126,7 +126,6 @@ app.post('/api/auth/register', async (req, res) => {
         return res.status(400).json({ error: 'Email вже використовується' });
     }
     
-    // Хешуємо пароль
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     
@@ -181,7 +180,6 @@ app.post('/api/auth/login', async (req, res) => {
     const token = generateToken(user.id);
     const { password: _, ...userWithoutPassword } = user;
     
-    // Оновлюємо час останнього входу
     user.updatedAt = new Date().toISOString();
     writeDB(db);
     
@@ -238,10 +236,7 @@ app.put('/api/auth/profile', upload.single('avatar'), (req, res) => {
         return res.status(401).json({ error: 'Користувача не знайдено' });
     }
     
-    // Оновлюємо дані
     const updates = req.body;
-    
-    // Безпечні поля для оновлення
     const allowedFields = [
         'name', 'avatarEmoji', 'currency', 'language', 'theme',
         'monthlyBudget', 'monthlyIncome', 'workplace', 'notificationsEnabled'
@@ -253,7 +248,6 @@ app.put('/api/auth/profile', upload.single('avatar'), (req, res) => {
         }
     });
     
-    // Оновлюємо аватар якщо є
     if (req.file) {
         db.users[userIndex].avatar = `/uploads/${req.file.filename}`;
     }
@@ -269,7 +263,6 @@ app.put('/api/auth/profile', upload.single('avatar'), (req, res) => {
 //           МАРШРУТИ ВИТРАТ
 // ===========================================
 
-// ОТРИМАННЯ ВСІХ ВИТРАТ
 app.get('/api/expenses', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) {
@@ -282,7 +275,6 @@ app.get('/api/expenses', (req, res) => {
     res.json({ success: true, expenses: userExpenses });
 });
 
-// ДОДАВАННЯ ВИТРАТИ
 app.post('/api/expenses', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) {
@@ -305,7 +297,6 @@ app.post('/api/expenses', (req, res) => {
     res.json({ success: true, expense: newExpense });
 });
 
-// ВИДАЛЕННЯ ВИТРАТИ
 app.delete('/api/expenses/:id', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -317,7 +308,6 @@ app.delete('/api/expenses/:id', (req, res) => {
     res.json({ success: true });
 });
 
-// СТАТИСТИКА ВИТРАТ
 app.get('/api/expenses/stats', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -339,7 +329,6 @@ app.get('/api/expenses/stats', (req, res) => {
 //           МАРШРУТИ ЦІЛЕЙ
 // ===========================================
 
-// ОТРИМАННЯ ЦІЛЕЙ
 app.get('/api/goals', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -350,7 +339,6 @@ app.get('/api/goals', (req, res) => {
     res.json({ success: true, goals: userGoals });
 });
 
-// ДОДАВАННЯ ЦІЛІ
 app.post('/api/goals', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -371,7 +359,6 @@ app.post('/api/goals', (req, res) => {
     res.json({ success: true, goal: newGoal });
 });
 
-// ВИДАЛЕННЯ ЦІЛІ
 app.delete('/api/goals/:id', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -384,7 +371,7 @@ app.delete('/api/goals/:id', (req, res) => {
 });
 
 // ===========================================
-//           МАРШРУТИ ЧАТІВ
+//           МАРШРУТИ ЧАТІВ (ВИПРАВЛЕНО)
 // ===========================================
 
 // ОТРИМАННЯ ВСІХ СЕСІЙ
@@ -395,10 +382,20 @@ app.get('/api/chat/sessions', (req, res) => {
     const db = readDB();
     const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
     
-    res.json({ success: true, sessions: userSessions });
+    // Форматуємо сесії з усіма потрібними полями
+    const formattedSessions = userSessions.map(s => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        messageCount: s.messageCount || 0,
+        lastMessage: s.lastMessage || null
+    }));
+    
+    res.json({ success: true, sessions: formattedSessions });
 });
 
-// СТВОРЕННЯ НОВОЇ СЕСІЇ
+// СТВОРЕННЯ НОВОЇ СЕСІЇ (ВИПРАВЛЕНО)
 app.post('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -484,7 +481,6 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
 //           СТАТИСТИЧНІ МАРШРУТИ
 // ===========================================
 
-// ОТРИМАННЯ СТАТИСТИКИ КОРИСТУВАЧА
 app.get('/api/user/stats', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
