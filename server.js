@@ -29,8 +29,10 @@ function initDB() {
 function readDB() {
     try {
         if (!fs.existsSync(DB_PATH)) {
-            fs.writeFileSync(DB_PATH, JSON.stringify(initDB(), null, 2));
-            return initDB();
+            console.log('📁 База даних не знайдена, створюємо нову');
+            const initialDB = initDB();
+            fs.writeFileSync(DB_PATH, JSON.stringify(initialDB, null, 2));
+            return initialDB;
         }
         const data = fs.readFileSync(DB_PATH, 'utf8');
         return JSON.parse(data);
@@ -43,6 +45,7 @@ function readDB() {
 function writeDB(data) {
     try {
         fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        console.log('💾 Базу даних збережено');
         return true;
     } catch (error) {
         console.log('❌ Помилка запису БД:', error.message);
@@ -119,7 +122,13 @@ app.get('/api/auth/me', (req, res) => {
         return res.status(401).json({ error: 'Не авторизовано' });
     }
     
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
+    
     const db = readDB();
+    // Для простоти беремо останнього користувача
     if (db.users.length > 0) {
         const user = db.users[db.users.length - 1];
         const { password: _, ...userWithoutPassword } = user;
@@ -141,6 +150,7 @@ app.get('/api/expenses', (req, res) => {
     
     const db = readDB();
     const userExpenses = (db.expenses || []).filter(e => e.userId === userId);
+    console.log(`📊 Витрати для userId ${userId}: ${userExpenses.length} записів`);
     res.json({ success: true, expenses: userExpenses });
 });
 
@@ -163,6 +173,7 @@ app.post('/api/expenses', (req, res) => {
     db.expenses.push(newExpense);
     writeDB(db);
     
+    console.log(`✅ Витрату додано для userId ${userId}`);
     res.json({ success: true, expense: newExpense });
 });
 
@@ -173,6 +184,7 @@ app.delete('/api/expenses/:id', (req, res) => {
     const db = readDB();
     db.expenses = (db.expenses || []).filter(e => !(e.id === req.params.id && e.userId === userId));
     writeDB(db);
+    
     res.json({ success: true });
 });
 
@@ -186,6 +198,7 @@ app.get('/api/goals', (req, res) => {
     
     const db = readDB();
     const userGoals = (db.goals || []).filter(g => g.userId === userId);
+    console.log(`🎯 Цілі для userId ${userId}: ${userGoals.length} записів`);
     res.json({ success: true, goals: userGoals });
 });
 
@@ -206,6 +219,7 @@ app.post('/api/goals', (req, res) => {
     db.goals.push(newGoal);
     writeDB(db);
     
+    console.log(`✅ Ціль додано для userId ${userId}`);
     res.json({ success: true, goal: newGoal });
 });
 
@@ -216,20 +230,26 @@ app.delete('/api/goals/:id', (req, res) => {
     const db = readDB();
     db.goals = (db.goals || []).filter(g => !(g.id === req.params.id && g.userId === userId));
     writeDB(db);
+    
     res.json({ success: true });
 });
 
 // ===========================================
-//           МАРШРУТИ ЧАТІВ (ДОДАНО!)
+//           МАРШРУТИ ЧАТІВ
 // ===========================================
 
 // ОТРИМАННЯ ВСІХ СЕСІЙ
 app.get('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
-    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    if (!userId) {
+        console.log('❌ chat/sessions: userId відсутній');
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
     
     const db = readDB();
     const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
+    
+    console.log(`📊 Сесій для userId ${userId}: ${userSessions.length}`);
     
     const formattedSessions = userSessions.map(s => ({
         id: s.id,
@@ -240,14 +260,16 @@ app.get('/api/chat/sessions', (req, res) => {
         lastMessage: s.lastMessage || null
     }));
     
-    console.log(`📊 Знайдено ${formattedSessions.length} сесій для userId ${userId}`);
     res.json({ success: true, sessions: formattedSessions });
 });
 
 // СТВОРЕННЯ НОВОЇ СЕСІЇ
 app.post('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
-    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    if (!userId) {
+        console.log('❌ create session: userId відсутній');
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
     
     const db = readDB();
     const newSession = {
@@ -264,7 +286,7 @@ app.post('/api/chat/sessions', (req, res) => {
     db.chatSessions.push(newSession);
     writeDB(db);
     
-    console.log(`✅ Створено нову сесію для userId ${userId}: ${newSession.name}`);
+    console.log(`✅ Сесію створено для userId ${userId}: ${newSession.id}`);
     res.json({ success: true, session: newSession });
 });
 
@@ -279,7 +301,7 @@ app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     db.chatMessages = (db.chatMessages || []).filter(m => !(m.sessionId === sessionId && m.userId === userId));
     writeDB(db);
     
-    console.log(`🗑️ Видалено сесію ${sessionId} для userId ${userId}`);
+    console.log(`🗑️ Сесію видалено: ${sessionId}`);
     res.json({ success: true });
 });
 
@@ -292,7 +314,7 @@ app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const db = readDB();
     const messages = (db.chatMessages || []).filter(m => m.sessionId === sessionId && m.userId === userId);
     
-    console.log(`📨 Знайдено ${messages.length} повідомлень для сесії ${sessionId}`);
+    console.log(`📨 Повідомлень для сесії ${sessionId}: ${messages.length}`);
     res.json({ success: true, messages: messages });
 });
 
@@ -300,15 +322,35 @@ app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
 app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
-    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    
+    console.log(`📝 Додавання повідомлення: userId=${userId}, sessionId=${sessionId}`);
+    console.log(`📝 Body:`, req.body);
+    
+    if (!userId) {
+        console.log('❌ add message: userId відсутній');
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
+    
+    if (!sessionId) {
+        console.log('❌ add message: sessionId відсутній');
+        return res.status(400).json({ error: 'sessionId відсутній' });
+    }
     
     const db = readDB();
+    
+    // Перевіряємо чи існує сесія
+    const sessionExists = (db.chatSessions || []).some(s => s.id === sessionId && s.userId === userId);
+    if (!sessionExists) {
+        console.log(`❌ Сесія ${sessionId} не знайдена для userId ${userId}`);
+        return res.status(404).json({ error: 'Сесію не знайдено' });
+    }
+    
     const newMessage = {
         id: 'msg_' + Date.now(),
         userId: userId,
         sessionId: sessionId,
-        content: req.body.content,
-        isUser: req.body.isUser,
+        content: req.body.content || '',
+        isUser: req.body.isUser || false,
         createdAt: new Date().toISOString()
     };
     
@@ -319,7 +361,7 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const sessionIndex = (db.chatSessions || []).findIndex(s => s.id === sessionId);
     if (sessionIndex !== -1) {
         db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
-        db.chatSessions[sessionIndex].lastMessage = req.body.content;
+        db.chatSessions[sessionIndex].lastMessage = req.body.content || '';
         db.chatSessions[sessionIndex].messageCount = (db.chatMessages || []).filter(
             m => m.sessionId === sessionId
         ).length;
@@ -327,7 +369,7 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     
     writeDB(db);
     
-    console.log(`💬 Додано повідомлення в сесію ${sessionId} для userId ${userId}`);
+    console.log(`✅ Повідомлення додано: ${newMessage.id}`);
     res.json({ success: true, message: newMessage });
 });
 
