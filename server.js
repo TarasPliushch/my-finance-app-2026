@@ -128,7 +128,6 @@ app.get('/api/auth/me', (req, res) => {
     }
     
     const db = readDB();
-    // Для простоти беремо останнього користувача
     if (db.users.length > 0) {
         const user = db.users[db.users.length - 1];
         const { password: _, ...userWithoutPassword } = user;
@@ -150,7 +149,6 @@ app.get('/api/expenses', (req, res) => {
     
     const db = readDB();
     const userExpenses = (db.expenses || []).filter(e => e.userId === userId);
-    console.log(`📊 Витрати для userId ${userId}: ${userExpenses.length} записів`);
     res.json({ success: true, expenses: userExpenses });
 });
 
@@ -173,7 +171,6 @@ app.post('/api/expenses', (req, res) => {
     db.expenses.push(newExpense);
     writeDB(db);
     
-    console.log(`✅ Витрату додано для userId ${userId}`);
     res.json({ success: true, expense: newExpense });
 });
 
@@ -198,7 +195,6 @@ app.get('/api/goals', (req, res) => {
     
     const db = readDB();
     const userGoals = (db.goals || []).filter(g => g.userId === userId);
-    console.log(`🎯 Цілі для userId ${userId}: ${userGoals.length} записів`);
     res.json({ success: true, goals: userGoals });
 });
 
@@ -219,7 +215,6 @@ app.post('/api/goals', (req, res) => {
     db.goals.push(newGoal);
     writeDB(db);
     
-    console.log(`✅ Ціль додано для userId ${userId}`);
     res.json({ success: true, goal: newGoal });
 });
 
@@ -323,17 +318,26 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
     
-    console.log(`📝 Додавання повідомлення: userId=${userId}, sessionId=${sessionId}`);
-    console.log(`📝 Body:`, req.body);
+    console.log('='.repeat(50));
+    console.log('📝 ДОДАВАННЯ ПОВІДОМЛЕННЯ');
+    console.log('📝 userId:', userId);
+    console.log('📝 sessionId:', sessionId);
+    console.log('📝 body:', req.body);
+    console.log('='.repeat(50));
     
     if (!userId) {
-        console.log('❌ add message: userId відсутній');
-        return res.status(401).json({ error: 'Не авторизовано' });
+        console.log('❌ ПОМИЛКА: userId відсутній');
+        return res.status(401).json({ error: 'Не авторизовано - userId відсутній' });
     }
     
     if (!sessionId) {
-        console.log('❌ add message: sessionId відсутній');
+        console.log('❌ ПОМИЛКА: sessionId відсутній');
         return res.status(400).json({ error: 'sessionId відсутній' });
+    }
+    
+    if (!req.body.content) {
+        console.log('❌ ПОМИЛКА: content відсутній');
+        return res.status(400).json({ error: 'content відсутній' });
     }
     
     const db = readDB();
@@ -341,18 +345,20 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     // Перевіряємо чи існує сесія
     const sessionExists = (db.chatSessions || []).some(s => s.id === sessionId && s.userId === userId);
     if (!sessionExists) {
-        console.log(`❌ Сесія ${sessionId} не знайдена для userId ${userId}`);
+        console.log(`❌ ПОМИЛКА: Сесія ${sessionId} не знайдена для userId ${userId}`);
         return res.status(404).json({ error: 'Сесію не знайдено' });
     }
     
     const newMessage = {
-        id: 'msg_' + Date.now(),
+        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
         userId: userId,
         sessionId: sessionId,
-        content: req.body.content || '',
+        content: req.body.content,
         isUser: req.body.isUser || false,
         createdAt: new Date().toISOString()
     };
+    
+    console.log('📝 Нове повідомлення:', newMessage);
     
     if (!db.chatMessages) db.chatMessages = [];
     db.chatMessages.push(newMessage);
@@ -361,15 +367,21 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const sessionIndex = (db.chatSessions || []).findIndex(s => s.id === sessionId);
     if (sessionIndex !== -1) {
         db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
-        db.chatSessions[sessionIndex].lastMessage = req.body.content || '';
+        db.chatSessions[sessionIndex].lastMessage = req.body.content;
         db.chatSessions[sessionIndex].messageCount = (db.chatMessages || []).filter(
             m => m.sessionId === sessionId
         ).length;
+        console.log(`📊 Сесію оновлено, тепер повідомлень: ${db.chatSessions[sessionIndex].messageCount}`);
     }
     
-    writeDB(db);
+    const saved = writeDB(db);
+    if (saved) {
+        console.log('✅ Повідомлення успішно збережено в БД');
+    } else {
+        console.log('❌ ПОМИЛКА при збереженні в БД');
+    }
     
-    console.log(`✅ Повідомлення додано: ${newMessage.id}`);
+    console.log('✅ Повідомлення додано, відправляємо відповідь');
     res.json({ success: true, message: newMessage });
 });
 
@@ -381,6 +393,15 @@ app.get('/', (req, res) => {
     const db = readDB();
     res.json({
         message: '🚀 СЕРВЕР FINANCE AI',
+        version: '2.0',
+        features: {
+            auth: true,
+            expenses: true,
+            goals: true,
+            chats: true,
+            profiles: true,
+            statistics: true
+        },
         stats: {
             users: db.users.length,
             expenses: (db.expenses || []).length,
