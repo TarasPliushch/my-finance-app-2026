@@ -77,6 +77,7 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     console.log('   content:', req.body.content);
     console.log('   isUser:', req.body.isUser);
     
+    // ВАЖЛИВА ПЕРЕВІРКА!
     if (!userId) {
         return res.status(401).json({ error: 'Не авторизовано - userId відсутній' });
     }
@@ -94,6 +95,7 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     // Перевіряємо чи існує сесія
     const sessionExists = (db.chatSessions || []).some(s => s.id === sessionId && s.userId === userId);
     if (!sessionExists) {
+        console.log('❌ Сесія не знайдена!');
         return res.status(404).json({ error: 'Сесію не знайдено' });
     }
     
@@ -106,6 +108,8 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
         isUser: req.body.isUser === true,
         createdAt: new Date().toISOString()
     };
+    
+    console.log('📝 Нове повідомлення:', newMessage);
     
     // Додаємо в базу
     if (!db.chatMessages) db.chatMessages = [];
@@ -123,6 +127,8 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     
     writeDB(db);
     
-    console.log('✅ Повідомлення додано:', newMessage.id);
+    console.log('✅ Повідомлення додано, всього повідомлень:', db.chatMessages.length);
+    console.log('✅ Повідомлень в цій сесії:', db.chatSessions[sessionIndex].messageCount);
+    
     res.json({ success: true, message: newMessage });
 });
