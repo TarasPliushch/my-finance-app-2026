@@ -4,7 +4,7 @@ const cors = require('cors');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const app = express();
 
 app.use(cors());
@@ -19,17 +19,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-t
 const JWT_EXPIRE = '30d';
 const OTP_EXPIRE_MINUTES = 10;
 
-// Set EMAIL_USER and EMAIL_PASS (Gmail App Password) in Railway environment variables
-const EMAIL_USER = process.env.EMAIL_USER || 'tarasplus502@gmail.com';
-const EMAIL_PASS = process.env.EMAIL_PASS || '';
-
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: EMAIL_USER,
-        pass: EMAIL_PASS
-    }
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ===========================================
 //           ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ
@@ -123,17 +113,26 @@ function verifyOTP(db, userId, type, inputCode) {
 }
 
 async function sendEmail(to, subject, html) {
-    if (!EMAIL_PASS) {
-        console.log(`⚠️  EMAIL_PASS не налаштований — пропускаємо email до ${to}`);
+    if (!process.env.RESEND_API_KEY) {
+        console.log(`⚠️  RESEND_API_KEY не налаштований — email до ${to} пропущено`);
         console.log(`📧 Тема: ${subject}`);
         return true;
     }
     try {
-        await transporter.sendMail({ from: `FinanceAI <${EMAIL_USER}>`, to, subject, html });
-        console.log(`📧 Email надіслано → ${to}`);
+        const { data, error } = await resend.emails.send({
+            from: 'FinanceAI <onboarding@resend.dev>',
+            to: [to],
+            subject,
+            html
+        });
+        if (error) {
+            console.log('❌ Resend error:', JSON.stringify(error));
+            return false;
+        }
+        console.log(`📧 Email надіслано → ${to} (id: ${data.id})`);
         return true;
     } catch (err) {
-        console.log('❌ Email error:', err.message);
+        console.log('❌ Email exception:', err.message);
         return false;
     }
 }
@@ -212,7 +211,6 @@ p{color:#6c6c70;line-height:1.6}
 //           МАРШРУТИ АВТОРИЗАЦІЇ
 // ===========================================
 
-// РЕЄСТРАЦІЯ
 app.post('/api/auth/register', async (req, res) => {
     console.log('📝 Реєстрація:', req.body.email);
     const { email, password, name } = req.body;
@@ -272,7 +270,6 @@ app.post('/api/auth/register', async (req, res) => {
     });
 });
 
-// ВХІД
 app.post('/api/auth/login', async (req, res) => {
     console.log('🔑 Вхід:', req.body.email);
     const { email, password } = req.body;
@@ -315,7 +312,6 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ success: true, token, user: userWithoutPassword });
 });
 
-// ОТРИМАТИ ПОТОЧНОГО КОРИСТУВАЧА
 app.get('/api/auth/me', (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: 'Не авторизовано' });
@@ -331,7 +327,6 @@ app.get('/api/auth/me', (req, res) => {
     res.json({ user: userWithoutPassword });
 });
 
-// ОНОВЛЕННЯ ПРОФІЛЮ
 app.put('/api/auth/profile', (req, res) => {
     const userId = getAuthUserId(req);
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
@@ -354,7 +349,6 @@ app.put('/api/auth/profile', (req, res) => {
     res.json({ success: true, user: userWithoutPassword });
 });
 
-// ПІДТВЕРДЖЕННЯ EMAIL
 app.post('/api/auth/verify-email', (req, res) => {
     const userId = getAuthUserId(req);
     if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
@@ -381,7 +375,6 @@ app.post('/api/auth/verify-email', (req, res) => {
     res.json({ success: true });
 });
 
-// ПОВТОРНЕ НАДСИЛАННЯ КОДУ ПІДТВЕРДЖЕННЯ
 app.post('/api/auth/resend-verification', async (req, res) => {
     const userId = getAuthUserId(req);
     if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
@@ -407,7 +400,6 @@ app.post('/api/auth/resend-verification', async (req, res) => {
     res.json({ success: sent, error: sent ? undefined : 'Не вдалося надіслати email' });
 });
 
-// ПЕРЕВІРКА КОДУ 2FA — ЗАВЕРШЕННЯ ВХОДУ
 app.post('/api/auth/verify-2fa', (req, res) => {
     const { email, code } = req.body;
     if (!email || !code) {
@@ -434,7 +426,6 @@ app.post('/api/auth/verify-2fa', (req, res) => {
     res.json({ success: true, token, user: userWithoutPassword });
 });
 
-// ЗАПИТ НА СКИДАННЯ ПАРОЛЯ
 app.post('/api/auth/forgot-password', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ success: false, error: 'email обов\'язковий' });
@@ -460,7 +451,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     res.json({ success: true });
 });
 
-// СКИДАННЯ ПАРОЛЯ
 app.post('/api/auth/reset-password', async (req, res) => {
     const { email, code, newPassword } = req.body;
     if (!email || !code || !newPassword) {
@@ -962,7 +952,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log('='.repeat(50));
     console.log(`✅ СЕРВЕР FINANCE AI v3.0 НА ПОРТУ ${PORT}`);
-    console.log(`📧 Email: ${EMAIL_USER} (${EMAIL_PASS ? 'налаштовано' : '⚠️  EMAIL_PASS не встановлено'})`);
+    console.log(`📧 Resend: ${process.env.RESEND_API_KEY ? '✅ налаштовано' : '⚠️  RESEND_API_KEY не встановлено'}`);
     console.log(`📍 https://my-finance-app-2026-production.up.railway.app`);
     console.log('='.repeat(50));
 });
