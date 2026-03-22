@@ -4,7 +4,7 @@ const cors = require('cors');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Resend } = require('resend');
+const https = require('https');
 const app = express();
 
 app.use(cors());
@@ -18,8 +18,6 @@ const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this';
 const JWT_EXPIRE = '30d';
 const OTP_EXPIRE_MINUTES = 10;
-
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ===========================================
 //           ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ
@@ -48,10 +46,10 @@ function readDB() {
         }
         const data = fs.readFileSync(DB_PATH, 'utf8');
         const db = JSON.parse(data);
-        if (!db.otpCodes)       db.otpCodes = [];
-        if (!db.notifications)  db.notifications = [];
-        if (!db.shoppingLists)  db.shoppingLists = [];
-        if (!db.shoppingItems)  db.shoppingItems = [];
+        if (!db.otpCodes)      db.otpCodes = [];
+        if (!db.notifications) db.notifications = [];
+        if (!db.shoppingLists) db.shoppingLists = [];
+        if (!db.shoppingItems) db.shoppingItems = [];
         return db;
     } catch (error) {
         console.log('❌ Помилка читання БД:', error.message);
@@ -118,23 +116,43 @@ async function sendEmail(to, subject, html) {
         console.log(`📧 Тема: ${subject}`);
         return true;
     }
-    try {
-        const { data, error } = await resend.emails.send({
+    return new Promise((resolve) => {
+        const body = JSON.stringify({
             from: 'FinanceAI <onboarding@resend.dev>',
             to: [to],
             subject,
             html
         });
-        if (error) {
-            console.log('❌ Resend error:', JSON.stringify(error));
-            return false;
-        }
-        console.log(`📧 Email надіслано → ${to} (id: ${data.id})`);
-        return true;
-    } catch (err) {
-        console.log('❌ Email exception:', err.message);
-        return false;
-    }
+        const options = {
+            hostname: 'api.resend.com',
+            path: '/emails',
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body)
+            }
+        };
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                if (res.statusCode === 200 || res.statusCode === 201) {
+                    console.log(`📧 Email надіслано → ${to}`);
+                    resolve(true);
+                } else {
+                    console.log(`❌ Resend помилка [${res.statusCode}]: ${data}`);
+                    resolve(false);
+                }
+            });
+        });
+        req.on('error', (err) => {
+            console.log('❌ Email error:', err.message);
+            resolve(false);
+        });
+        req.write(body);
+        req.end();
+    });
 }
 
 // ===========================================
@@ -252,22 +270,13 @@ app.post('/api/auth/register', async (req, res) => {
     saveOTP(db, newUser.id, 'email_verification', code);
     writeDB(db);
 
-    await sendEmail(
-        email,
-        'FinanceAI — Підтвердження email адреси',
-        tplVerification(name, code)
-    );
+    await sendEmail(email, 'FinanceAI — Підтвердження email адреси', tplVerification(name, code));
 
     const token = generateToken(newUser.id);
     const { password: _, ...userWithoutPassword } = newUser;
 
     console.log(`✅ Реєстрація успішна: ${email}`);
-    res.json({
-        success: true,
-        token,
-        user: userWithoutPassword,
-        requiresVerification: true
-    });
+    res.json({ success: true, token, user: userWithoutPassword, requiresVerification: true });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -290,13 +299,7 @@ app.post('/api/auth/login', async (req, res) => {
         const code = generateOTP();
         saveOTP(db, user.id, '2fa', code);
         writeDB(db);
-
-        await sendEmail(
-            email,
-            'FinanceAI — Код двофакторної автентифікації',
-            tpl2FA(user.name, code)
-        );
-
+        await sendEmail(email, 'FinanceAI — Код двофакторної автентифікації', tpl2FA(user.name, code));
         const { password: _, ...userWithoutPassword } = user;
         console.log(`🔐 2FA потрібна для: ${email}`);
         return res.json({ success: true, requires2FA: true, user: userWithoutPassword });
@@ -304,7 +307,6 @@ app.post('/api/auth/login', async (req, res) => {
 
     const token = generateToken(user.id);
     const { password: _, ...userWithoutPassword } = user;
-
     user.updatedAt = new Date().toISOString();
     writeDB(db);
 
@@ -338,9 +340,7 @@ app.put('/api/auth/profile', (req, res) => {
     const allowed = ['name', 'avatarEmoji', 'language', 'description', 'theme', 'currency',
                      'monthlyBudget', 'notificationsEnabled', 'pinHash', 'twoFactorEnabled'];
     allowed.forEach(field => {
-        if (req.body[field] !== undefined) {
-            db.users[idx][field] = req.body[field];
-        }
+        if (req.body[field] !== undefined) db.users[idx][field] = req.body[field];
     });
     db.users[idx].updatedAt = new Date().toISOString();
     writeDB(db);
@@ -383,20 +383,13 @@ app.post('/api/auth/resend-verification', async (req, res) => {
     const user = db.users.find(u => u.id === userId);
     if (!user) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
 
-    if (user.isEmailVerified) {
-        return res.json({ success: true, message: 'Email вже підтверджено' });
-    }
+    if (user.isEmailVerified) return res.json({ success: true, message: 'Email вже підтверджено' });
 
     const code = generateOTP();
     saveOTP(db, userId, 'email_verification', code);
     writeDB(db);
 
-    const sent = await sendEmail(
-        user.email,
-        'FinanceAI — Код підтвердження email',
-        tplVerification(user.name, code)
-    );
-
+    const sent = await sendEmail(user.email, 'FinanceAI — Код підтвердження email', tplVerification(user.name, code));
     res.json({ success: sent, error: sent ? undefined : 'Не вдалося надіслати email' });
 });
 
@@ -433,19 +426,13 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const db = readDB();
     const user = db.users.find(u => u.email === email);
 
-    if (!user) {
-        return res.json({ success: true, message: 'Якщо акаунт існує — код надіслано' });
-    }
+    if (!user) return res.json({ success: true, message: 'Якщо акаунт існує — код надіслано' });
 
     const code = generateOTP();
     saveOTP(db, user.id, 'password_reset', code);
     writeDB(db);
 
-    await sendEmail(
-        email,
-        'FinanceAI — Скидання пароля',
-        tplPasswordReset(user.name, code)
-    );
+    await sendEmail(email, 'FinanceAI — Скидання пароля', tplPasswordReset(user.name, code));
 
     console.log(`📧 Код скидання пароля надіслано для: ${email}`);
     res.json({ success: true });
@@ -679,14 +666,12 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     if (!req.body.content) return res.status(400).json({ error: 'content відсутній' });
 
     const db = readDB();
-
     const sessionExists = (db.chatSessions || []).some(s => s.id === sessionId && s.userId === userId);
     if (!sessionExists) return res.status(404).json({ error: 'Сесію не знайдено' });
 
     const newMessage = {
         id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-        userId,
-        sessionId,
+        userId, sessionId,
         content: req.body.content,
         isUser: req.body.isUser || false,
         createdAt: new Date().toISOString()
@@ -696,8 +681,8 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
 
     const sIdx = db.chatSessions.findIndex(s => s.id === sessionId);
     if (sIdx !== -1) {
-        db.chatSessions[sIdx].updatedAt   = new Date().toISOString();
-        db.chatSessions[sIdx].lastMessage = req.body.content;
+        db.chatSessions[sIdx].updatedAt    = new Date().toISOString();
+        db.chatSessions[sIdx].lastMessage  = req.body.content;
         db.chatSessions[sIdx].messageCount = db.chatMessages.filter(m => m.sessionId === sessionId).length;
     }
     writeDB(db);
@@ -773,7 +758,6 @@ app.get('/api/shopping/lists', (req, res) => {
     const db = readDB();
     const lists = (db.shoppingLists || []).filter(l => l.userId === userId);
     const items = (db.shoppingItems || []).filter(i => i.userId === userId);
-
     const result = lists.map(list => ({
         ...list,
         items: items.filter(i => i.listId === list.id)
@@ -847,8 +831,7 @@ app.post('/api/shopping/lists/:listId/items', (req, res) => {
     if (!db.shoppingItems) db.shoppingItems = [];
     const newItem = {
         id: req.body.id || 'sitem_' + Date.now(),
-        listId,
-        userId,
+        listId, userId,
         name: req.body.name || '',
         isChecked: req.body.isChecked || false,
         quantity: req.body.quantity || null,
