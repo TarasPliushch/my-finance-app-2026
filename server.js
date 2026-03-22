@@ -486,6 +486,51 @@ app.get('/', (req, res) => {
     });
 });
 
+// GET /api/notifications
+app.get('/api/notifications', (req, res) => {
+    const userId = req.headers['user-id'];
+    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    const db = readDB();
+    const notifs = (db.notifications || []).filter(n => n.userId === userId);
+    res.json({ success: true, notifications: notifs.map(({userId: _, ...n}) => n) });
+});
+
+// POST /api/notifications
+app.post('/api/notifications', (req, res) => {
+    const userId = req.headers['user-id'];
+    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    const db = readDB();
+    if (!db.notifications) db.notifications = [];
+    const notif = { ...req.body, userId };
+    db.notifications.push(notif);
+    if (db.notifications.length > 200) db.notifications = db.notifications.slice(-200);
+    writeDB(db);
+    res.json({ success: true });
+});
+
+// DELETE /api/notifications/:id
+app.delete('/api/notifications/:id', (req, res) => {
+    const userId = req.headers['user-id'];
+    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    const db = readDB();
+    db.notifications = (db.notifications || []).filter(
+        n => !(n.id === req.params.id && n.userId === userId)
+    );
+    writeDB(db);
+    res.json({ success: true });
+});
+
+// PUT /api/notifications/read-all
+app.put('/api/notifications/read-all', (req, res) => {
+    const userId = req.headers['user-id'];
+    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    const db = readDB();
+    (db.notifications || []).forEach(n => { if (n.userId === userId) n.isRead = true; });
+    writeDB(db);
+    res.json({ success: true });
+});
+
+
 // ===========================================
 //           ЗАПУСК СЕРВЕРА
 // ===========================================
