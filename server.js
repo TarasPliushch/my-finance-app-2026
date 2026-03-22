@@ -1,7 +1,9 @@
-// server.js - ПОВНІСТЮ ВИПРАВЛЕНИЙ
+// server.js
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const app = express();
 
 app.use(cors());
@@ -12,6 +14,8 @@ app.use(express.json({ limit: '10mb' }));
 // ===========================================
 const DB_PATH = '/tmp/db.json';
 const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this';
+const JWT_EXPIRE = '30d';
 
 // ===========================================
 //           ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ
@@ -30,8 +34,9 @@ function readDB() {
     try {
         if (!fs.existsSync(DB_PATH)) {
             console.log('📁 База даних не знайдена, створюємо нову');
-            fs.writeFileSync(DB_PATH, JSON.stringify(initDB(), null, 2));
-            return initDB();
+            const initialDB = initDB();
+            fs.writeFileSync(DB_PATH, JSON.stringify(initialDB, null, 2));
+            return initialDB;
         }
         const data = fs.readFileSync(DB_PATH, 'utf8');
         return JSON.parse(data);
@@ -53,10 +58,25 @@ function writeDB(data) {
 }
 
 // ===========================================
+//           ДОПОМІЖНІ ФУНКЦІЇ
+// ===========================================
+function generateToken(userId) {
+    return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRE });
+}
+
+function verifyToken(token) {
+    try {
+        return jwt.verify(token, JWT_SECRET);
+    } catch (error) {
+        return null;
+    }
+}
+
+// ===========================================
 //           МАРШРУТИ АВТОРИЗАЦІЇ
 // ===========================================
 
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
     console.log('📝 Реєстрація:', req.body.email);
     const { email, password, name } = req.body;
     
@@ -70,11 +90,14 @@ app.post('/api/auth/register', (req, res) => {
         return res.status(400).json({ error: 'Email вже використовується' });
     }
     
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    
     const newUser = {
         id: 'user_' + Date.now(),
         email,
         name,
-        password,
+        password: hashedPassword,
         avatarEmoji: "👤",
         currency: "₴",
         monthlyBudget: 0,
@@ -86,31 +109,41 @@ app.post('/api/auth/register', (req, res) => {
     db.users.push(newUser);
     writeDB(db);
     
+    const token = generateToken(newUser.id);
     const { password: _, ...userWithoutPassword } = newUser;
     
     res.json({
         success: true,
-        token: 'token_' + Date.now(),
+        token,
         user: userWithoutPassword
     });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
     console.log('🔑 Вхід:', req.body.email);
     const { email, password } = req.body;
     
     const db = readDB();
     const user = db.users.find(u => u.email === email);
     
-    if (!user || user.password !== password) {
+    if (!user) {
         return res.status(401).json({ error: 'Невірний email або пароль' });
     }
     
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+        return res.status(401).json({ error: 'Невірний email або пароль' });
+    }
+    
+    const token = generateToken(user.id);
     const { password: _, ...userWithoutPassword } = user;
+    
+    user.updatedAt = new Date().toISOString();
+    writeDB(db);
     
     res.json({
         success: true,
-        token: 'token_' + Date.now(),
+        token,
         user: userWithoutPassword
     });
 });
@@ -121,14 +154,22 @@ app.get('/api/auth/me', (req, res) => {
         return res.status(401).json({ error: 'Не авторизовано' });
     }
     
-    const db = readDB();
-    if (db.users.length > 0) {
-        const user = db.users[db.users.length - 1];
-        const { password: _, ...userWithoutPassword } = user;
-        res.json({ user: userWithoutPassword });
-    } else {
-        res.json({ user: null });
+    const token = authHeader.split(' ')[1];
+    const decoded = verifyToken(token);
+    
+    if (!decoded) {
+        return res.status(401).json({ error: 'Недійсний токен' });
     }
+    
+    const db = readDB();
+    const user = db.users.find(u => u.id === decoded.userId);
+    
+    if (!user) {
+        return res.status(401).json({ error: 'Користувача не знайдено' });
+    }
+    
+    const { password: _, ...userWithoutPassword } = user;
+    res.json({ user: userWithoutPassword });
 });
 
 // ===========================================
@@ -137,7 +178,9 @@ app.get('/api/auth/me', (req, res) => {
 
 app.get('/api/expenses', (req, res) => {
     const userId = req.headers['user-id'];
-    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    if (!userId) {
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
     
     const db = readDB();
     const userExpenses = (db.expenses || []).filter(e => e.userId === userId);
@@ -146,9 +189,12 @@ app.get('/api/expenses', (req, res) => {
 
 app.post('/api/expenses', (req, res) => {
     const userId = req.headers['user-id'];
-    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    if (!userId) {
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
     
     const db = readDB();
+    
     const newExpense = {
         id: 'expense_' + Date.now(),
         userId: userId,
@@ -192,6 +238,7 @@ app.post('/api/goals', (req, res) => {
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
     
     const db = readDB();
+    
     const newGoal = {
         id: 'goal_' + Date.now(),
         userId: userId,
@@ -225,6 +272,7 @@ app.delete('/api/goals/:id', (req, res) => {
 app.get('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) {
+        console.log('❌ chat/sessions: userId відсутній');
         return res.status(401).json({ error: 'Не авторизовано' });
     }
     
@@ -232,13 +280,25 @@ app.get('/api/chat/sessions', (req, res) => {
     const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
     
     console.log(`📊 Сесій для userId ${userId}: ${userSessions.length}`);
-    res.json({ success: true, sessions: userSessions });
+    
+    const formattedSessions = userSessions.map(s => ({
+        id: s.id,
+        name: s.name,
+        userId: s.userId,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        messageCount: s.messageCount || 0,
+        lastMessage: s.lastMessage || null
+    }));
+    
+    res.json({ success: true, sessions: formattedSessions });
 });
 
 // СТВОРЕННЯ НОВОЇ СЕСІЇ
 app.post('/api/chat/sessions', (req, res) => {
     const userId = req.headers['user-id'];
     if (!userId) {
+        console.log('❌ create session: userId відсутній');
         return res.status(401).json({ error: 'Не авторизовано' });
     }
     
@@ -257,8 +317,32 @@ app.post('/api/chat/sessions', (req, res) => {
     db.chatSessions.push(newSession);
     writeDB(db);
     
-    console.log(`✅ Створено сесію: ${newSession.id}`);
+    console.log(`✅ Сесію створено для userId ${userId}: ${newSession.id}`);
     res.json({ success: true, session: newSession });
+});
+
+// ОНОВЛЕННЯ СЕСІЇ (ПЕРЕЙМЕНУВАННЯ)
+app.put('/api/chat/sessions/:sessionId', (req, res) => {
+    const userId = req.headers['user-id'];
+    const sessionId = req.params.sessionId;
+    if (!userId) {
+        console.log('❌ update session: userId відсутній');
+        return res.status(401).json({ error: 'Не авторизовано' });
+    }
+    
+    const db = readDB();
+    const sessionIndex = (db.chatSessions || []).findIndex(s => s.id === sessionId && s.userId === userId);
+    
+    if (sessionIndex === -1) {
+        return res.status(404).json({ error: 'Сесію не знайдено' });
+    }
+    
+    db.chatSessions[sessionIndex].name = req.body.name || db.chatSessions[sessionIndex].name;
+    db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
+    writeDB(db);
+    
+    console.log(`✏️ Сесію перейменовано: ${sessionId} -> ${db.chatSessions[sessionIndex].name}`);
+    res.json({ success: true, session: db.chatSessions[sessionIndex] });
 });
 
 // ВИДАЛЕННЯ СЕСІЇ
@@ -272,10 +356,11 @@ app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     db.chatMessages = (db.chatMessages || []).filter(m => !(m.sessionId === sessionId && m.userId === userId));
     writeDB(db);
     
+    console.log(`🗑️ Сесію видалено: ${sessionId}`);
     res.json({ success: true });
 });
 
-// ОТРИМАННЯ ПОВІДОМЛЕНЬ
+// ОТРИМАННЯ ПОВІДОМЛЕНЬ СЕСІЇ
 app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
@@ -284,95 +369,94 @@ app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const db = readDB();
     const messages = (db.chatMessages || []).filter(m => m.sessionId === sessionId && m.userId === userId);
     
+    console.log(`📨 Повідомлень для сесії ${sessionId}: ${messages.length}`);
     res.json({ success: true, messages: messages });
 });
 
-// ДОДАВАННЯ ПОВІДОМЛЕННЯ - ВИПРАВЛЕНО!
+// ДОДАВАННЯ ПОВІДОМЛЕННЯ
 app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
-    console.log('='.repeat(50));
-    console.log('📨 ОТРИМАНО POST ЗАПИТ НА ПОВІДОМЛЕННЯ');
-    console.log('📨 Headers:', req.headers);
-    console.log('📨 Body:', req.body);
-    console.log('📨 Params:', req.params);
-    console.log('='.repeat(50));
-    
     const userId = req.headers['user-id'];
     const sessionId = req.params.sessionId;
     
-    // ПЕРЕВІРКА 1: userId
+    console.log('📝 ДОДАВАННЯ ПОВІДОМЛЕННЯ');
+    console.log('📝 userId:', userId);
+    console.log('📝 sessionId:', sessionId);
+    console.log('📝 body:', req.body);
+    
     if (!userId) {
-        console.log('❌ ПОМИЛКА: userId відсутній');
-        return res.status(401).json({ error: 'userId відсутній' });
+        return res.status(401).json({ error: 'Не авторизовано - userId відсутній' });
     }
     
-    // ПЕРЕВІРКА 2: sessionId
     if (!sessionId) {
-        console.log('❌ ПОМИЛКА: sessionId відсутній');
         return res.status(400).json({ error: 'sessionId відсутній' });
     }
     
-    // ПЕРЕВІРКА 3: content
     if (!req.body.content) {
-        console.log('❌ ПОМИЛКА: content відсутній');
         return res.status(400).json({ error: 'content відсутній' });
     }
     
-    try {
-        const db = readDB();
-        
-        // ПЕРЕВІРКА 4: чи існує сесія
-        const sessionExists = (db.chatSessions || []).some(s => s.id === sessionId && s.userId === userId);
-        if (!sessionExists) {
-            console.log(`❌ ПОМИЛКА: Сесія ${sessionId} не знайдена для userId ${userId}`);
-            return res.status(404).json({ error: 'Сесію не знайдено' });
-        }
-        
-        // Створюємо повідомлення
-        const newMessage = {
-            id: 'msg_' + Date.now(),
-            userId: userId,
-            sessionId: sessionId,
-            content: req.body.content,
-            isUser: req.body.isUser === true,
-            createdAt: new Date().toISOString()
-        };
-        
-        console.log('📨 Нове повідомлення:', newMessage);
-        
-        // Додаємо в базу
-        if (!db.chatMessages) db.chatMessages = [];
-        db.chatMessages.push(newMessage);
-        
-        // Оновлюємо сесію
-        const sessionIndex = db.chatSessions.findIndex(s => s.id === sessionId);
-        if (sessionIndex !== -1) {
-            db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
-            db.chatSessions[sessionIndex].lastMessage = req.body.content;
-            db.chatSessions[sessionIndex].messageCount = (db.chatMessages || []).filter(
-                m => m.sessionId === sessionId
-            ).length;
-            console.log(`📊 Оновлено сесію, тепер повідомлень: ${db.chatSessions[sessionIndex].messageCount}`);
-        }
-        
-        // Зберігаємо
-        const saved = writeDB(db);
-        
-        if (saved) {
-            console.log('✅ Повідомлення успішно збережено в БД');
-        } else {
-            console.log('❌ ПОМИЛКА при збереженні в БД');
-            return res.status(500).json({ error: 'Помилка збереження' });
-        }
-        
-        console.log('✅ Повідомлення успішно додано!');
-        
-        res.json({ success: true, message: newMessage });
-        
-    } catch (error) {
-        console.log('❌ КРИТИЧНА ПОМИЛКА:', error);
-        res.status(500).json({ error: 'Внутрішня помилка сервера: ' + error.message });
+    const db = readDB();
+    
+    // Перевіряємо чи існує сесія
+    const sessionExists = (db.chatSessions || []).some(s => s.id === sessionId && s.userId === userId);
+    if (!sessionExists) {
+        return res.status(404).json({ error: 'Сесію не знайдено' });
     }
-}); // ← Ця дужка була відсутня!
+    
+    const newMessage = {
+        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+        userId: userId,
+        sessionId: sessionId,
+        content: req.body.content,
+        isUser: req.body.isUser || false,
+        createdAt: new Date().toISOString()
+    };
+    
+    if (!db.chatMessages) db.chatMessages = [];
+    db.chatMessages.push(newMessage);
+    
+    // Оновлюємо сесію
+    const sessionIndex = (db.chatSessions || []).findIndex(s => s.id === sessionId);
+    if (sessionIndex !== -1) {
+        db.chatSessions[sessionIndex].updatedAt = new Date().toISOString();
+        db.chatSessions[sessionIndex].lastMessage = req.body.content;
+        db.chatSessions[sessionIndex].messageCount = (db.chatMessages || []).filter(
+            m => m.sessionId === sessionId
+        ).length;
+    }
+    
+    writeDB(db);
+    
+    console.log(`✅ Повідомлення додано: ${newMessage.id}`);
+    res.json({ success: true, message: newMessage });
+});
+
+// ===========================================
+//           СТАТИСТИЧНІ МАРШРУТИ
+// ===========================================
+
+app.get('/api/user/stats', (req, res) => {
+    const userId = req.headers['user-id'];
+    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    
+    const db = readDB();
+    
+    const userExpenses = (db.expenses || []).filter(e => e.userId === userId);
+    const userGoals = (db.goals || []).filter(g => g.userId === userId);
+    const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
+    
+    res.json({
+        success: true,
+        stats: {
+            totalExpenses: userExpenses.length,
+            totalExpensesAmount: userExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
+            totalGoals: userGoals.length,
+            completedGoals: userGoals.filter(g => g.currentAmount >= g.targetAmount).length,
+            totalChats: userSessions.length,
+            totalMessages: (db.chatMessages || []).filter(m => m.userId === userId).length
+        }
+    });
+});
 
 // ===========================================
 //           ТЕСТОВИЙ МАРШРУТ
