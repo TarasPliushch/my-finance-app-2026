@@ -118,7 +118,7 @@ async function sendEmail(to, subject, html) {
     }
     return new Promise((resolve) => {
         const body = JSON.stringify({
-            from: 'FinanceAI <onboarding@resend.dev>',
+            from: 'FinanceAI <onboarding@yourproject.ink>',
             to: [to],
             subject,
             html
