@@ -78,9 +78,6 @@ function writeDB(data) {
     }
 }
 
-// ===========================================
-//           ДОПОМІЖНІ ФУНКЦІЇ
-// ===========================================
 function generateToken(userId) {
     return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRE });
 }
@@ -121,7 +118,6 @@ function verifyOTP(db, userId, type, inputCode) {
     return { valid: true };
 }
 
-// Перевірка блокування акаунту
 function isAccountBlocked(db, userId) {
     const blocked = (db.blockedAccounts || []).find(b => b.userId === userId);
     if (!blocked) return false;
@@ -133,7 +129,6 @@ function isAccountBlocked(db, userId) {
     return true;
 }
 
-// Реєстрація невдалої спроби PIN
 function recordFailedPinAttempt(db, userId) {
     const attempts = (db.pinAttempts || []).find(a => a.userId === userId);
     const now = new Date();
@@ -141,7 +136,6 @@ function recordFailedPinAttempt(db, userId) {
     if (!attempts) {
         db.pinAttempts.push({ userId, count: 1, lastAttempt: now.toISOString() });
     } else {
-        // Якщо минуло більше 15 хвилин, скидаємо лічильник
         const lastAttempt = new Date(attempts.lastAttempt);
         if (now.getTime() - lastAttempt.getTime() > 15 * 60 * 1000) {
             attempts.count = 1;
@@ -151,7 +145,6 @@ function recordFailedPinAttempt(db, userId) {
         attempts.lastAttempt = now.toISOString();
     }
     
-    // Якщо досягнуто максимуму - блокуємо акаунт
     if (attempts.count >= MAX_PIN_ATTEMPTS) {
         const expiresAt = new Date(now.getTime() + BLOCK_DURATION_MINUTES * 60 * 1000);
         db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.userId !== userId);
@@ -161,17 +154,15 @@ function recordFailedPinAttempt(db, userId) {
             attempts: attempts.count,
             blockedAt: now.toISOString()
         });
-        // Очищаємо спроби
         db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== userId);
         writeDB(db);
-        return true; // акаунт заблоковано
+        return true;
     }
     
     writeDB(db);
-    return false; // акаунт ще не заблоковано
+    return false;
 }
 
-// Скидання лічильника спроб PIN після успішного входу
 function resetPinAttempts(db, userId) {
     db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== userId);
     writeDB(db);
@@ -413,7 +404,6 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(401).json({ success: false, error: 'Невірний email або пароль' });
     }
 
-    // Якщо 2FA увімкнено - надсилаємо код
     if (user.twoFactorEnabled) {
         const code = generateOTP();
         saveOTP(db, user.id, '2fa', code);
@@ -600,7 +590,6 @@ app.post('/api/auth/verify-pin', (req, res) => {
     const user = db.users.find(u => u.id === userId);
     if (!user) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
 
-    // Перевірка блокування
     if (isAccountBlocked(db, userId)) {
         return res.status(403).json({ 
             success: false, 
@@ -613,28 +602,23 @@ app.post('/api/auth/verify-pin', (req, res) => {
         return res.status(400).json({ success: false, error: 'PIN не встановлено' });
     }
 
-    const crypto = require('crypto');
     const hashedInput = crypto.createHash('sha256')
         .update(pin + user.id)
         .digest('hex');
 
     if (hashedInput === user.pinHash) {
-        // Успішний вхід - скидаємо лічильник спроб
         resetPinAttempts(db, userId);
         res.json({ success: true, message: 'PIN правильний' });
     } else {
-        // Невдала спроба - записуємо і перевіряємо блокування
         const wasBlocked = recordFailedPinAttempt(db, userId);
         
         if (wasBlocked) {
-            // Генеруємо токен для розблокування
             const unblockToken = crypto.randomBytes(32).toString('hex');
             db.blockedAccounts = (db.blockedAccounts || []).map(b => 
                 b.userId === userId ? { ...b, unblockToken } : b
             );
             writeDB(db);
             
-            // Відправляємо email про блокування
             sendEmail(user.email, 'FinanceAI — Ваш акаунт заблоковано', tplAccountBlocked(user.name, unblockToken));
             
             return res.status(403).json({ 
@@ -655,7 +639,6 @@ app.post('/api/auth/verify-pin', (req, res) => {
     }
 });
 
-// Розблокування акаунту
 app.post('/api/auth/unblock', (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ success: false, error: 'Токен відсутній' });
@@ -667,13 +650,30 @@ app.post('/api/auth/unblock', (req, res) => {
         return res.status(404).json({ success: false, error: 'Недійсний токен' });
     }
     
-    // Видаляємо блокування
     db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.unblockToken !== token);
     db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== blocked.userId);
     writeDB(db);
     
-    console.log(`✅ Акаунт ${blocked.userId} розблоковано`);
     res.json({ success: true, message: 'Акаунт розблоковано' });
+});
+
+app.get('/api/auth/unblock-status', (req, res) => {
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ success: false, error: 'Токен відсутній' });
+
+    const db = readDB();
+    const blocked = (db.blockedAccounts || []).find(b => b.unblockToken === token);
+    
+    if (!blocked) {
+        return res.json({ success: false, error: 'Недійсний токен' });
+    }
+    
+    const user = db.users.find(u => u.id === blocked.userId);
+    res.json({ 
+        success: true, 
+        email: user?.email,
+        expiresAt: blocked.expiresAt
+    });
 });
 
 // ===========================================
@@ -923,8 +923,6 @@ app.get('/api/chat/sessions', (req, res) => {
 
     const db = readDB();
     const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
-    console.log(`📊 Сесій для userId ${userId}: ${userSessions.length}`);
-
     const formatted = userSessions.map(s => ({
         id: s.id, name: s.name, userId: s.userId,
         createdAt: s.createdAt, updatedAt: s.updatedAt,
@@ -952,7 +950,6 @@ app.post('/api/chat/sessions', (req, res) => {
     db.chatSessions.push(newSession);
     writeDB(db);
 
-    console.log(`✅ Сесію створено для userId ${userId}: ${newSession.id}`);
     res.json({ success: true, session: newSession });
 });
 
@@ -969,7 +966,6 @@ app.put('/api/chat/sessions/:sessionId', (req, res) => {
     db.chatSessions[idx].updatedAt = new Date().toISOString();
     writeDB(db);
 
-    console.log(`✏️ Сесію перейменовано: ${sessionId} → ${db.chatSessions[idx].name}`);
     res.json({ success: true, session: db.chatSessions[idx] });
 });
 
@@ -983,7 +979,6 @@ app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     db.chatMessages = (db.chatMessages || []).filter(m => !(m.sessionId === sessionId && m.userId === userId));
     writeDB(db);
 
-    console.log(`🗑️ Сесію видалено: ${sessionId}`);
     res.json({ success: true });
 });
 
@@ -994,7 +989,6 @@ app.get('/api/chat/sessions/:sessionId/messages', (req, res) => {
 
     const db = readDB();
     const messages = (db.chatMessages || []).filter(m => m.sessionId === sessionId && m.userId === userId);
-    console.log(`📨 Повідомлень для сесії ${sessionId}: ${messages.length}`);
     res.json({ success: true, messages });
 });
 
@@ -1028,7 +1022,6 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     }
     writeDB(db);
 
-    console.log(`✅ Повідомлення додано: ${newMessage.id}`);
     res.json({ success: true, message: newMessage });
 });
 
@@ -1053,15 +1046,6 @@ app.post('/api/notifications', (req, res) => {
     if (!db.notifications) db.notifications = [];
     const notif = { ...req.body, userId };
     db.notifications.push(notif);
-    const userNotifs = db.notifications.filter(n => n.userId === userId);
-    if (userNotifs.length > 500) {
-        let removed = 0;
-        const excess = userNotifs.length - 500;
-        db.notifications = db.notifications.filter(n => {
-            if (n.userId === userId && removed < excess) { removed++; return false; }
-            return true;
-        });
-    }
     writeDB(db);
     res.json({ success: true });
 });
@@ -1071,9 +1055,7 @@ app.delete('/api/notifications/:id', (req, res) => {
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
 
     const db = readDB();
-    db.notifications = (db.notifications || []).filter(
-        n => !(n.id === req.params.id && n.userId === userId)
-    );
+    db.notifications = (db.notifications || []).filter(n => !(n.id === req.params.id && n.userId === userId));
     writeDB(db);
     res.json({ success: true });
 });
@@ -1113,20 +1095,15 @@ app.post('/api/shopping/lists', (req, res) => {
     const db = readDB();
     if (!db.shoppingLists) db.shoppingLists = [];
     const newList = {
-        id: req.body.id || 'slist_' + Date.now(),
+        id: 'slist_' + Date.now(),
         userId,
         name: req.body.name || 'Новий список',
         reminderDate: req.body.reminderDate || null,
         reminderLeadMinutes: req.body.reminderLeadMinutes || 0,
-        createdAt: req.body.createdAt || new Date().toISOString(),
+        createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
     };
-    const idx = db.shoppingLists.findIndex(l => l.id === newList.id && l.userId === userId);
-    if (idx !== -1) {
-        db.shoppingLists[idx] = { ...db.shoppingLists[idx], ...newList };
-    } else {
-        db.shoppingLists.push(newList);
-    }
+    db.shoppingLists.push(newList);
     writeDB(db);
     res.json({ success: true, list: newList });
 });
@@ -1190,23 +1167,16 @@ app.post('/api/shopping/lists/:listId/items', (req, res) => {
 
     if (!db.shoppingItems) db.shoppingItems = [];
     const newItem = {
-        id: req.body.id || 'sitem_' + Date.now(),
+        id: 'sitem_' + Date.now(),
         listId, userId,
         name: req.body.name || '',
         isChecked: req.body.isChecked || false,
         quantity: req.body.quantity || null,
         price: req.body.price || null,
         note: req.body.note || null,
-        createdAt: req.body.createdAt || new Date().toISOString()
+        createdAt: new Date().toISOString()
     };
-    const idx = db.shoppingItems.findIndex(i => i.id === newItem.id && i.userId === userId);
-    if (idx !== -1) {
-        db.shoppingItems[idx] = { ...db.shoppingItems[idx], ...newItem };
-    } else {
-        db.shoppingItems.push(newItem);
-    }
-    const lIdx = db.shoppingLists.findIndex(l => l.id === listId);
-    if (lIdx !== -1) db.shoppingLists[lIdx].updatedAt = new Date().toISOString();
+    db.shoppingItems.push(newItem);
     writeDB(db);
     res.json({ success: true, item: newItem });
 });
@@ -1257,29 +1227,6 @@ app.get('/api/user/stats', (req, res) => {
             totalChats: userSessions.length,
             totalMessages: (db.chatMessages || []).filter(m => m.userId === userId).length
         }
-    });
-});
-
-// ===========================================
-//           РОЗБЛОКУВАННЯ АКАУНТУ (WEB)
-// ===========================================
-
-app.get('/api/auth/unblock-status', (req, res) => {
-    const { token } = req.query;
-    if (!token) return res.status(400).json({ success: false, error: 'Токен відсутній' });
-
-    const db = readDB();
-    const blocked = (db.blockedAccounts || []).find(b => b.unblockToken === token);
-    
-    if (!blocked) {
-        return res.json({ success: false, error: 'Недійсний токен' });
-    }
-    
-    const user = db.users.find(u => u.id === blocked.userId);
-    res.json({ 
-        success: true, 
-        email: user?.email,
-        expiresAt: blocked.expiresAt
     });
 });
 
