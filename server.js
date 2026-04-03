@@ -19,6 +19,8 @@ const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this';
 const JWT_EXPIRE = '30d';
 const OTP_EXPIRE_MINUTES = 10;
+const MAX_PIN_ATTEMPTS = 3;
+const BLOCK_DURATION_MINUTES = 30;
 
 // ===========================================
 //           ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ
@@ -35,7 +37,9 @@ function initDB() {
         shoppingItems: [],
         otpCodes: [],
         pinResetCodes: [],
-        twoFactorCodes: []
+        twoFactorCodes: [],
+        pinAttempts: [],
+        blockedAccounts: []
     };
 }
 
@@ -55,6 +59,8 @@ function readDB() {
         if (!db.shoppingItems) db.shoppingItems = [];
         if (!db.pinResetCodes) db.pinResetCodes = [];
         if (!db.twoFactorCodes) db.twoFactorCodes = [];
+        if (!db.pinAttempts) db.pinAttempts = [];
+        if (!db.blockedAccounts) db.blockedAccounts = [];
         return db;
     } catch (error) {
         console.log('❌ Помилка читання БД:', error.message);
@@ -113,6 +119,62 @@ function verifyOTP(db, userId, type, inputCode) {
     if (otp.code !== inputCode) return { valid: false, reason: 'Невірний код' };
     db.otpCodes = db.otpCodes.filter(o => !(o.userId === userId && o.type === type));
     return { valid: true };
+}
+
+// Перевірка блокування акаунту
+function isAccountBlocked(db, userId) {
+    const blocked = (db.blockedAccounts || []).find(b => b.userId === userId);
+    if (!blocked) return false;
+    if (new Date(blocked.expiresAt) < new Date()) {
+        db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.userId !== userId);
+        writeDB(db);
+        return false;
+    }
+    return true;
+}
+
+// Реєстрація невдалої спроби PIN
+function recordFailedPinAttempt(db, userId) {
+    const attempts = (db.pinAttempts || []).find(a => a.userId === userId);
+    const now = new Date();
+    
+    if (!attempts) {
+        db.pinAttempts.push({ userId, count: 1, lastAttempt: now.toISOString() });
+    } else {
+        // Якщо минуло більше 15 хвилин, скидаємо лічильник
+        const lastAttempt = new Date(attempts.lastAttempt);
+        if (now.getTime() - lastAttempt.getTime() > 15 * 60 * 1000) {
+            attempts.count = 1;
+        } else {
+            attempts.count++;
+        }
+        attempts.lastAttempt = now.toISOString();
+    }
+    
+    // Якщо досягнуто максимуму - блокуємо акаунт
+    if (attempts.count >= MAX_PIN_ATTEMPTS) {
+        const expiresAt = new Date(now.getTime() + BLOCK_DURATION_MINUTES * 60 * 1000);
+        db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.userId !== userId);
+        db.blockedAccounts.push({
+            userId,
+            expiresAt: expiresAt.toISOString(),
+            attempts: attempts.count,
+            blockedAt: now.toISOString()
+        });
+        // Очищаємо спроби
+        db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== userId);
+        writeDB(db);
+        return true; // акаунт заблоковано
+    }
+    
+    writeDB(db);
+    return false; // акаунт ще не заблоковано
+}
+
+// Скидання лічильника спроб PIN після успішного входу
+function resetPinAttempts(db, userId) {
+    db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== userId);
+    writeDB(db);
 }
 
 async function sendEmail(to, subject, html) {
@@ -201,7 +263,7 @@ p{color:#6c6c70;line-height:1.6}
 <div class="logo"><h1>FinanceAI</h1></div>
 <h2>Двофакторна автентифікація</h2>
 <p>Привіт, <strong>${name}</strong>! 🔐</p>
-<p>Хтось намагається увійти до вашого акаунту FinanceAI. Введіть цей код для підтвердження входу:</p>
+<p>Код для входу в ваш акаунт FinanceAI:</p>
 <div class="box"><div class="code">${code}</div></div>
 <div class="warn">⏱ Код дійсний <strong>10 хвилин</strong>. Якщо це не ви — негайно змініть пароль!</div>
 <div class="footer">© 2026 FinanceAI &nbsp;·&nbsp; <a href="mailto:tarasplus502@gmail.com">tarasplus502@gmail.com</a></div>
@@ -248,6 +310,35 @@ p{color:#6c6c70;line-height:1.6}
 <p>Ми отримали запит на скидання PIN-коду вашого акаунту FinanceAI. Введіть цей код у застосунку:</p>
 <div class="box"><div class="code">${code}</div></div>
 <div class="warn">⏱ Код дійсний <strong>10 хвилин</strong>. Якщо ви не запитували — проігноруйте цей лист.</div>
+<div class="footer">© 2026 FinanceAI &nbsp;·&nbsp; <a href="mailto:tarasplus502@gmail.com">tarasplus502@gmail.com</a></div>
+</div></body></html>`;
+}
+
+function tplAccountBlocked(name, unblockToken) {
+    const unblockLink = `https://financeai-web-ten.vercel.app/unblock?token=${unblockToken}`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;margin:0;padding:20px}
+.c{max-width:480px;margin:0 auto;background:#fff;border-radius:20px;padding:40px;box-shadow:0 4px 20px rgba(0,0,0,.1)}
+.logo h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#e53e3e,#c53030);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:0;text-align:center}
+h2{color:#1c1c1e;font-size:20px;text-align:center}
+p{color:#6c6c70;line-height:1.6}
+.warn{background:#fde8e8;border-left:4px solid #e53e3e;padding:10px 14px;border-radius:8px;color:#742a2a;font-size:13px;margin:20px 0}
+.button{background:linear-gradient(135deg,#FF2D55,#AF52DE);border-radius:16px;padding:14px 24px;text-align:center;margin:20px 0}
+.button a{color:#fff;text-decoration:none;font-weight:600}
+.footer{text-align:center;color:#aeaeb2;font-size:12px;margin-top:20px}
+</style></head><body><div class="c">
+<div class="logo"><h1>FinanceAI</h1></div>
+<h2>⚠️ Увага! Спроба несанкціонованого доступу</h2>
+<p>Привіт, <strong>${name}</strong>! 🔒</p>
+<p>Хтось намагався увійти до вашого акаунту FinanceAI і <strong>3 рази неправильно ввів PIN-код</strong>.</p>
+<div class="warn">🔐 Ваш акаунт тимчасово заблоковано на 30 хвилин для захисту ваших даних.</div>
+<p>Якщо це були ви - натисніть кнопку нижче, щоб розблокувати акаунт:</p>
+<div class="button"><a href="${unblockLink}">🔓 Розблокувати акаунт</a></div>
+<p>Якщо це були не ви - негайно змініть пароль та PIN-код!</p>
+<p>Рекомендації:<br>
+• Змініть пароль від акаунту<br>
+• Змініть PIN-код<br>
+• Увімкніть двофакторну автентифікацію</p>
 <div class="footer">© 2026 FinanceAI &nbsp;·&nbsp; <a href="mailto:tarasplus502@gmail.com">tarasplus502@gmail.com</a></div>
 </div></body></html>`;
 }
@@ -322,13 +413,14 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(401).json({ success: false, error: 'Невірний email або пароль' });
     }
 
+    // Якщо 2FA увімкнено - надсилаємо код
     if (user.twoFactorEnabled) {
         const code = generateOTP();
         saveOTP(db, user.id, '2fa', code);
         writeDB(db);
         await sendEmail(email, 'FinanceAI — Код двофакторної автентифікації', tpl2FA(user.name, code));
         const { password: _, ...userWithoutPassword } = user;
-        console.log(`🔐 2FA потрібна для: ${email}`);
+        console.log(`🔐 2FA код надіслано для: ${email}`);
         return res.json({ success: true, requires2FA: true, user: userWithoutPassword });
     }
 
@@ -494,6 +586,97 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // ===========================================
+//           PIN VERIFICATION З БЛОКУВАННЯМ
+// ===========================================
+
+app.post('/api/auth/verify-pin', (req, res) => {
+    const { pin } = req.body;
+    const userId = getAuthUserId(req);
+    
+    if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
+    if (!pin) return res.status(400).json({ success: false, error: 'PIN відсутній' });
+
+    const db = readDB();
+    const user = db.users.find(u => u.id === userId);
+    if (!user) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    // Перевірка блокування
+    if (isAccountBlocked(db, userId)) {
+        return res.status(403).json({ 
+            success: false, 
+            error: 'Акаунт тимчасово заблоковано. Перевірте email для розблокування.',
+            blocked: true 
+        });
+    }
+
+    if (!user.pinHash) {
+        return res.status(400).json({ success: false, error: 'PIN не встановлено' });
+    }
+
+    const crypto = require('crypto');
+    const hashedInput = crypto.createHash('sha256')
+        .update(pin + user.id)
+        .digest('hex');
+
+    if (hashedInput === user.pinHash) {
+        // Успішний вхід - скидаємо лічильник спроб
+        resetPinAttempts(db, userId);
+        res.json({ success: true, message: 'PIN правильний' });
+    } else {
+        // Невдала спроба - записуємо і перевіряємо блокування
+        const wasBlocked = recordFailedPinAttempt(db, userId);
+        
+        if (wasBlocked) {
+            // Генеруємо токен для розблокування
+            const unblockToken = crypto.randomBytes(32).toString('hex');
+            db.blockedAccounts = (db.blockedAccounts || []).map(b => 
+                b.userId === userId ? { ...b, unblockToken } : b
+            );
+            writeDB(db);
+            
+            // Відправляємо email про блокування
+            sendEmail(user.email, 'FinanceAI — Ваш акаунт заблоковано', tplAccountBlocked(user.name, unblockToken));
+            
+            return res.status(403).json({ 
+                success: false, 
+                error: 'Акаунт заблоковано після 3 невдалих спроб. Перевірте email для розблокування.',
+                blocked: true 
+            });
+        }
+        
+        const attempts = (db.pinAttempts || []).find(a => a.userId === userId);
+        const remainingAttempts = MAX_PIN_ATTEMPTS - (attempts?.count || 0);
+        
+        res.status(401).json({ 
+            success: false, 
+            error: `Невірний PIN. Залишилось спроб: ${remainingAttempts}`,
+            attemptsLeft: remainingAttempts
+        });
+    }
+});
+
+// Розблокування акаунту
+app.post('/api/auth/unblock', (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ success: false, error: 'Токен відсутній' });
+
+    const db = readDB();
+    const blocked = (db.blockedAccounts || []).find(b => b.unblockToken === token);
+    
+    if (!blocked) {
+        return res.status(404).json({ success: false, error: 'Недійсний токен' });
+    }
+    
+    // Видаляємо блокування
+    db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.unblockToken !== token);
+    db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== blocked.userId);
+    writeDB(db);
+    
+    console.log(`✅ Акаунт ${blocked.userId} розблоковано`);
+    res.json({ success: true, message: 'Акаунт розблоковано' });
+});
+
+// ===========================================
 //           PIN RECOVERY МАРШРУТИ
 // ===========================================
 
@@ -574,7 +757,7 @@ app.post('/api/auth/2fa/enable', (req, res) => {
     });
     writeDB(db);
 
-    sendEmail(db.users[idx].email, 'FinanceAI — Увімкнення 2FA', tpl2FA(db.users[idx].name, code));
+    sendEmail(db.users[idx].email, 'FinanceAI — Код для увімкнення 2FA', tpl2FA(db.users[idx].name, code));
 
     res.json({ success: true, message: 'Код надіслано на email' });
 });
@@ -1078,6 +1261,29 @@ app.get('/api/user/stats', (req, res) => {
 });
 
 // ===========================================
+//           РОЗБЛОКУВАННЯ АКАУНТУ (WEB)
+// ===========================================
+
+app.get('/api/auth/unblock-status', (req, res) => {
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ success: false, error: 'Токен відсутній' });
+
+    const db = readDB();
+    const blocked = (db.blockedAccounts || []).find(b => b.unblockToken === token);
+    
+    if (!blocked) {
+        return res.json({ success: false, error: 'Недійсний токен' });
+    }
+    
+    const user = db.users.find(u => u.id === blocked.userId);
+    res.json({ 
+        success: true, 
+        email: user?.email,
+        expiresAt: blocked.expiresAt
+    });
+});
+
+// ===========================================
 //           ТЕСТОВИЙ МАРШРУТ
 // ===========================================
 
@@ -1088,8 +1294,8 @@ app.get('/', (req, res) => {
         version: '3.0',
         features: {
             auth: true, emailVerification: true, twoFactorAuth: true,
-            passwordReset: true, pinReset: true, expenses: true, goals: true,
-            chats: true, notifications: true, shoppingLists: true
+            passwordReset: true, pinReset: true, pinBlocking: true,
+            expenses: true, goals: true, chats: true, notifications: true, shoppingLists: true
         },
         stats: {
             users: db.users.length,
