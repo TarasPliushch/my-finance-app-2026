@@ -5,6 +5,7 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const https = require('https');
+const crypto = require('crypto');
 const app = express();
 
 app.use(cors());
@@ -32,7 +33,9 @@ function initDB() {
         notifications: [],
         shoppingLists: [],
         shoppingItems: [],
-        otpCodes: []
+        otpCodes: [],
+        pinResetCodes: [],
+        twoFactorCodes: []
     };
 }
 
@@ -46,10 +49,12 @@ function readDB() {
         }
         const data = fs.readFileSync(DB_PATH, 'utf8');
         const db = JSON.parse(data);
-        if (!db.otpCodes)      db.otpCodes = [];
+        if (!db.otpCodes) db.otpCodes = [];
         if (!db.notifications) db.notifications = [];
         if (!db.shoppingLists) db.shoppingLists = [];
         if (!db.shoppingItems) db.shoppingItems = [];
+        if (!db.pinResetCodes) db.pinResetCodes = [];
+        if (!db.twoFactorCodes) db.twoFactorCodes = [];
         return db;
     } catch (error) {
         console.log('❌ Помилка читання БД:', error.message);
@@ -103,16 +108,16 @@ function saveOTP(db, userId, type, code) {
 
 function verifyOTP(db, userId, type, inputCode) {
     const otp = (db.otpCodes || []).find(o => o.userId === userId && o.type === type);
-    if (!otp)                                 return { valid: false, reason: 'Код не знайдено' };
+    if (!otp) return { valid: false, reason: 'Код не знайдено' };
     if (new Date(otp.expiresAt) < new Date()) return { valid: false, reason: 'Термін дії коду вийшов' };
-    if (otp.code !== inputCode)               return { valid: false, reason: 'Невірний код' };
+    if (otp.code !== inputCode) return { valid: false, reason: 'Невірний код' };
     db.otpCodes = db.otpCodes.filter(o => !(o.userId === userId && o.type === type));
     return { valid: true };
 }
 
 async function sendEmail(to, subject, html) {
     if (!process.env.RESEND_API_KEY) {
-        console.log(`⚠️  RESEND_API_KEY не налаштований — email до ${to} пропущено`);
+        console.log(`⚠️ RESEND_API_KEY не налаштований — email до ${to} пропущено`);
         console.log(`📧 Тема: ${subject}`);
         return true;
     }
@@ -219,6 +224,28 @@ p{color:#6c6c70;line-height:1.6}
 <h2>Скидання пароля</h2>
 <p>Привіт, <strong>${name}</strong>! 🔑</p>
 <p>Ми отримали запит на скидання пароля вашого акаунту FinanceAI. Введіть цей код у застосунку:</p>
+<div class="box"><div class="code">${code}</div></div>
+<div class="warn">⏱ Код дійсний <strong>10 хвилин</strong>. Якщо ви не запитували — проігноруйте цей лист.</div>
+<div class="footer">© 2026 FinanceAI &nbsp;·&nbsp; <a href="mailto:tarasplus502@gmail.com">tarasplus502@gmail.com</a></div>
+</div></body></html>`;
+}
+
+function tplPinReset(name, code) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;margin:0;padding:20px}
+.c{max-width:480px;margin:0 auto;background:#fff;border-radius:20px;padding:40px;box-shadow:0 4px 20px rgba(0,0,0,.1)}
+.logo h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#FF9500,#FF2D55);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:0;text-align:center}
+h2{color:#1c1c1e;font-size:20px;text-align:center}
+p{color:#6c6c70;line-height:1.6}
+.box{background:linear-gradient(135deg,#FF9500,#FF2D55);border-radius:16px;padding:24px;text-align:center;margin:20px 0}
+.code{font-size:40px;font-weight:700;letter-spacing:10px;color:#fff;font-family:monospace}
+.warn{background:#fde8e8;border-left:4px solid #e53e3e;padding:10px 14px;border-radius:8px;color:#742a2a;font-size:13px}
+.footer{text-align:center;color:#aeaeb2;font-size:12px;margin-top:20px}
+</style></head><body><div class="c">
+<div class="logo"><h1>FinanceAI</h1></div>
+<h2>Скидання PIN-коду</h2>
+<p>Привіт, <strong>${name}</strong>! 🔑</p>
+<p>Ми отримали запит на скидання PIN-коду вашого акаунту FinanceAI. Введіть цей код у застосунку:</p>
 <div class="box"><div class="code">${code}</div></div>
 <div class="warn">⏱ Код дійсний <strong>10 хвилин</strong>. Якщо ви не запитували — проігноруйте цей лист.</div>
 <div class="footer">© 2026 FinanceAI &nbsp;·&nbsp; <a href="mailto:tarasplus502@gmail.com">tarasplus502@gmail.com</a></div>
@@ -467,6 +494,137 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // ===========================================
+//           PIN RECOVERY МАРШРУТИ
+// ===========================================
+
+app.post('/api/auth/reset-pin-request', async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, error: 'email обов\'язковий' });
+
+    const db = readDB();
+    const user = db.users.find(u => u.email === email);
+
+    if (!user) return res.json({ success: true, message: 'Якщо акаунт існує — код надіслано' });
+
+    const code = generateOTP();
+    db.pinResetCodes = (db.pinResetCodes || []).filter(c => c.userId !== user.id);
+    db.pinResetCodes.push({
+        userId: user.id,
+        code,
+        expiresAt: new Date(Date.now() + OTP_EXPIRE_MINUTES * 60 * 1000).toISOString(),
+        createdAt: new Date().toISOString()
+    });
+    writeDB(db);
+
+    await sendEmail(email, 'FinanceAI — Скидання PIN-коду', tplPinReset(user.name, code));
+
+    console.log(`📧 Код скидання PIN надіслано для: ${email}`);
+    res.json({ success: true });
+});
+
+app.post('/api/auth/reset-pin-verify', async (req, res) => {
+    const { email, code, newPinHash } = req.body;
+    if (!email || !code || !newPinHash) {
+        return res.status(400).json({ success: false, error: 'Всі поля обов\'язкові' });
+    }
+
+    const db = readDB();
+    const user = db.users.find(u => u.email === email);
+    if (!user) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    const resetCode = (db.pinResetCodes || []).find(c => c.userId === user.id && c.code === code);
+    if (!resetCode) {
+        return res.status(400).json({ success: false, error: 'Невірний код' });
+    }
+    if (new Date(resetCode.expiresAt) < new Date()) {
+        db.pinResetCodes = (db.pinResetCodes || []).filter(c => c.userId !== user.id);
+        writeDB(db);
+        return res.status(400).json({ success: false, error: 'Термін дії коду вийшов' });
+    }
+
+    const idx = db.users.findIndex(u => u.id === user.id);
+    db.users[idx].pinHash = newPinHash;
+    db.users[idx].updatedAt = new Date().toISOString();
+    db.pinResetCodes = (db.pinResetCodes || []).filter(c => c.userId !== user.id);
+    writeDB(db);
+
+    console.log(`✅ PIN змінено для: ${email}`);
+    res.json({ success: true });
+});
+
+// ===========================================
+//           2FA МАРШРУТИ
+// ===========================================
+
+app.post('/api/auth/2fa/enable', (req, res) => {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
+
+    const db = readDB();
+    const idx = db.users.findIndex(u => u.id === userId);
+    if (idx === -1) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    const code = generateOTP();
+    db.twoFactorCodes = (db.twoFactorCodes || []).filter(c => c.userId !== userId);
+    db.twoFactorCodes.push({
+        userId,
+        code,
+        expiresAt: new Date(Date.now() + OTP_EXPIRE_MINUTES * 60 * 1000).toISOString(),
+        createdAt: new Date().toISOString()
+    });
+    writeDB(db);
+
+    sendEmail(db.users[idx].email, 'FinanceAI — Увімкнення 2FA', tpl2FA(db.users[idx].name, code));
+
+    res.json({ success: true, message: 'Код надіслано на email' });
+});
+
+app.post('/api/auth/2fa/disable', (req, res) => {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
+
+    const db = readDB();
+    const idx = db.users.findIndex(u => u.id === userId);
+    if (idx === -1) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    db.users[idx].twoFactorEnabled = false;
+    db.users[idx].updatedAt = new Date().toISOString();
+    writeDB(db);
+
+    res.json({ success: true });
+});
+
+app.post('/api/auth/2fa/verify', (req, res) => {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
+
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ success: false, error: 'Код відсутній' });
+
+    const db = readDB();
+    const idx = db.users.findIndex(u => u.id === userId);
+    if (idx === -1) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    const twoFactorCode = (db.twoFactorCodes || []).find(c => c.userId === userId && c.code === code);
+    if (!twoFactorCode) {
+        return res.status(400).json({ success: false, error: 'Невірний код' });
+    }
+    if (new Date(twoFactorCode.expiresAt) < new Date()) {
+        db.twoFactorCodes = (db.twoFactorCodes || []).filter(c => c.userId !== userId);
+        writeDB(db);
+        return res.status(400).json({ success: false, error: 'Термін дії коду вийшов' });
+    }
+
+    db.users[idx].twoFactorEnabled = true;
+    db.users[idx].updatedAt = new Date().toISOString();
+    db.twoFactorCodes = (db.twoFactorCodes || []).filter(c => c.userId !== userId);
+    writeDB(db);
+
+    console.log(`✅ 2FA увімкнено для: ${db.users[idx].email}`);
+    res.json({ success: true });
+});
+
+// ===========================================
 //           МАРШРУТИ ВИТРАТ
 // ===========================================
 
@@ -661,8 +819,8 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
     const userId = getAuthUserId(req);
     const { sessionId } = req.params;
 
-    if (!userId)           return res.status(401).json({ error: 'Не авторизовано' });
-    if (!sessionId)        return res.status(400).json({ error: 'sessionId відсутній' });
+    if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
+    if (!sessionId) return res.status(400).json({ error: 'sessionId відсутній' });
     if (!req.body.content) return res.status(400).json({ error: 'content відсутній' });
 
     const db = readDB();
@@ -681,8 +839,8 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
 
     const sIdx = db.chatSessions.findIndex(s => s.id === sessionId);
     if (sIdx !== -1) {
-        db.chatSessions[sIdx].updatedAt    = new Date().toISOString();
-        db.chatSessions[sIdx].lastMessage  = req.body.content;
+        db.chatSessions[sIdx].updatedAt = new Date().toISOString();
+        db.chatSessions[sIdx].lastMessage = req.body.content;
         db.chatSessions[sIdx].messageCount = db.chatMessages.filter(m => m.sessionId === sessionId).length;
     }
     writeDB(db);
@@ -803,6 +961,25 @@ app.put('/api/shopping/lists/:id', (req, res) => {
         id: req.params.id, userId,
         updatedAt: new Date().toISOString()
     };
+    
+    if (req.body.items && Array.isArray(req.body.items)) {
+        if (!db.shoppingItems) db.shoppingItems = [];
+        db.shoppingItems = db.shoppingItems.filter(i => !(i.listId === req.params.id && i.userId === userId));
+        req.body.items.forEach(item => {
+            db.shoppingItems.push({
+                id: item.id || 'sitem_' + Date.now() + '_' + Math.random(),
+                listId: req.params.id,
+                userId,
+                name: item.name || '',
+                isChecked: item.isCompleted === true,
+                quantity: item.quantity || null,
+                price: item.price || null,
+                note: item.note || null,
+                createdAt: new Date().toISOString()
+            });
+        });
+    }
+    
     writeDB(db);
     res.json({ success: true, list: db.shoppingLists[idx] });
 });
@@ -883,19 +1060,19 @@ app.get('/api/user/stats', (req, res) => {
     if (!userId) return res.status(401).json({ error: 'Не авторизовано' });
 
     const db = readDB();
-    const userExpenses = (db.expenses     || []).filter(e => e.userId === userId);
-    const userGoals    = (db.goals        || []).filter(g => g.userId === userId);
+    const userExpenses = (db.expenses || []).filter(e => e.userId === userId);
+    const userGoals = (db.goals || []).filter(g => g.userId === userId);
     const userSessions = (db.chatSessions || []).filter(s => s.userId === userId);
 
     res.json({
         success: true,
         stats: {
-            totalExpenses:       userExpenses.length,
+            totalExpenses: userExpenses.length,
             totalExpensesAmount: userExpenses.reduce((s, e) => s + (e.amount || 0), 0),
-            totalGoals:          userGoals.length,
-            completedGoals:      userGoals.filter(g => g.currentAmount >= g.targetAmount).length,
-            totalChats:          userSessions.length,
-            totalMessages:       (db.chatMessages || []).filter(m => m.userId === userId).length
+            totalGoals: userGoals.length,
+            completedGoals: userGoals.filter(g => g.currentAmount >= g.targetAmount).length,
+            totalChats: userSessions.length,
+            totalMessages: (db.chatMessages || []).filter(m => m.userId === userId).length
         }
     });
 });
@@ -911,15 +1088,15 @@ app.get('/', (req, res) => {
         version: '3.0',
         features: {
             auth: true, emailVerification: true, twoFactorAuth: true,
-            passwordReset: true, expenses: true, goals: true,
+            passwordReset: true, pinReset: true, expenses: true, goals: true,
             chats: true, notifications: true, shoppingLists: true
         },
         stats: {
-            users:         db.users.length,
-            expenses:      (db.expenses      || []).length,
-            goals:         (db.goals         || []).length,
-            chatSessions:  (db.chatSessions  || []).length,
-            chatMessages:  (db.chatMessages  || []).length,
+            users: db.users.length,
+            expenses: (db.expenses || []).length,
+            goals: (db.goals || []).length,
+            chatSessions: (db.chatSessions || []).length,
+            chatMessages: (db.chatMessages || []).length,
             notifications: (db.notifications || []).length,
             shoppingLists: (db.shoppingLists || []).length,
             shoppingItems: (db.shoppingItems || []).length
@@ -935,7 +1112,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log('='.repeat(50));
     console.log(`✅ СЕРВЕР FINANCE AI v3.0 НА ПОРТУ ${PORT}`);
-    console.log(`📧 Resend: ${process.env.RESEND_API_KEY ? '✅ налаштовано' : '⚠️  RESEND_API_KEY не встановлено'}`);
+    console.log(`📧 Resend: ${process.env.RESEND_API_KEY ? '✅ налаштовано' : '⚠️ RESEND_API_KEY не встановлено'}`);
     console.log(`📍 https://my-finance-app-2026-production.up.railway.app`);
     console.log('='.repeat(50));
 });
