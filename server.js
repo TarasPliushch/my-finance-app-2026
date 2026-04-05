@@ -1,4 +1,4 @@
-// server.js - ПОВНИЙ КОД З БЛОКУВАННЯМ
+// server.js - ПОВНИЙ КОД З УСІМА МАРШРУТАМИ
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -786,6 +786,17 @@ app.post('/api/auth/reset-pin-verify', async (req, res) => {
 // ===========================================
 //           2FA МАРШРУТИ
 // ===========================================
+
+app.get('/api/auth/2fa/status', (req, res) => {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
+
+    const db = readDB();
+    const user = db.users.find(u => u.id === userId);
+    if (!user) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    res.json({ success: true, enabled: user.twoFactorEnabled || false });
+});
 
 app.post('/api/auth/2fa/enable', (req, res) => {
     const userId = getAuthUserId(req);
