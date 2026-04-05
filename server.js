@@ -1,4 +1,4 @@
-// server.js
+// server.js - ПОВНИЙ КОД З БЛОКУВАННЯМ
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -305,8 +305,7 @@ p{color:#6c6c70;line-height:1.6}
 </div></body></html>`;
 }
 
-function tplAccountBlocked(name, unblockToken) {
-    const unblockLink = `https://financeai-web-ten.vercel.app/unblock?token=${unblockToken}`;
+function tplAccountBlocked(name, unblockLink) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f7;margin:0;padding:20px}
 .c{max-width:480px;margin:0 auto;background:#fff;border-radius:20px;padding:40px;box-shadow:0 4px 20px rgba(0,0,0,.1)}
@@ -614,12 +613,20 @@ app.post('/api/auth/verify-pin', (req, res) => {
         
         if (wasBlocked) {
             const unblockToken = crypto.randomBytes(32).toString('hex');
-            db.blockedAccounts = (db.blockedAccounts || []).map(b => 
-                b.userId === userId ? { ...b, unblockToken } : b
-            );
+            const expiresAt = new Date(Date.now() + BLOCK_DURATION_MINUTES * 60 * 1000);
+            
+            db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.userId !== userId);
+            db.blockedAccounts.push({
+                userId,
+                unblockToken,
+                expiresAt: expiresAt.toISOString(),
+                blockedAt: new Date().toISOString(),
+                attempts: 3
+            });
             writeDB(db);
             
-            sendEmail(user.email, 'FinanceAI — Ваш акаунт заблоковано', tplAccountBlocked(user.name, unblockToken));
+            const unblockLink = `https://financeai-web-ten.vercel.app/unblock?token=${unblockToken}`;
+            sendEmail(user.email, 'FinanceAI — Ваш акаунт заблоковано', tplAccountBlocked(user.name, unblockLink));
             
             return res.status(403).json({ 
                 success: false, 
@@ -639,6 +646,40 @@ app.post('/api/auth/verify-pin', (req, res) => {
     }
 });
 
+// ===========================================
+//           БЛОКУВАННЯ ТА РОЗБЛОКУВАННЯ
+// ===========================================
+
+app.post('/api/auth/block-account', async (req, res) => {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ success: false, error: 'Не авторизовано' });
+
+    const db = readDB();
+    const user = db.users.find(u => u.id === userId);
+    if (!user) return res.status(404).json({ success: false, error: 'Користувача не знайдено' });
+
+    const unblockToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + BLOCK_DURATION_MINUTES * 60 * 1000);
+    
+    db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.userId !== userId);
+    db.blockedAccounts.push({
+        userId,
+        unblockToken,
+        expiresAt: expiresAt.toISOString(),
+        blockedAt: new Date().toISOString(),
+        attempts: 3
+    });
+    
+    db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== userId);
+    writeDB(db);
+    
+    const unblockLink = `https://financeai-web-ten.vercel.app/unblock?token=${unblockToken}`;
+    await sendEmail(user.email, 'FinanceAI — Ваш акаунт заблоковано', tplAccountBlocked(user.name, unblockLink));
+    
+    console.log(`🔐 Акаунт ${user.email} заблоковано`);
+    res.json({ success: true, message: 'Акаунт заблоковано', unblockToken });
+});
+
 app.post('/api/auth/unblock', (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ success: false, error: 'Токен відсутній' });
@@ -650,10 +691,17 @@ app.post('/api/auth/unblock', (req, res) => {
         return res.status(404).json({ success: false, error: 'Недійсний токен' });
     }
     
+    if (new Date(blocked.expiresAt) < new Date()) {
+        db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.unblockToken !== token);
+        writeDB(db);
+        return res.status(400).json({ success: false, error: 'Термін дії посилання вийшов' });
+    }
+    
     db.blockedAccounts = (db.blockedAccounts || []).filter(b => b.unblockToken !== token);
     db.pinAttempts = (db.pinAttempts || []).filter(a => a.userId !== blocked.userId);
     writeDB(db);
     
+    console.log(`✅ Акаунт ${blocked.userId} розблоковано`);
     res.json({ success: true, message: 'Акаунт розблоковано' });
 });
 
@@ -949,6 +997,7 @@ app.post('/api/chat/sessions', (req, res) => {
     if (!db.chatSessions) db.chatSessions = [];
     db.chatSessions.push(newSession);
     writeDB(db);
+
     res.json({ success: true, session: newSession });
 });
 
@@ -964,6 +1013,7 @@ app.put('/api/chat/sessions/:sessionId', (req, res) => {
     if (req.body.name !== undefined) db.chatSessions[idx].name = req.body.name;
     db.chatSessions[idx].updatedAt = new Date().toISOString();
     writeDB(db);
+
     res.json({ success: true, session: db.chatSessions[idx] });
 });
 
@@ -976,6 +1026,7 @@ app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     db.chatSessions = (db.chatSessions || []).filter(s => !(s.id === sessionId && s.userId === userId));
     db.chatMessages = (db.chatMessages || []).filter(m => !(m.sessionId === sessionId && m.userId === userId));
     writeDB(db);
+
     res.json({ success: true });
 });
 
@@ -1018,6 +1069,7 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
         db.chatSessions[sIdx].messageCount = db.chatMessages.filter(m => m.sessionId === sessionId).length;
     }
     writeDB(db);
+
     res.json({ success: true, message: newMessage });
 });
 
