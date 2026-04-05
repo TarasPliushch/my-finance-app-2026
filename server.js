@@ -949,7 +949,6 @@ app.post('/api/chat/sessions', (req, res) => {
     if (!db.chatSessions) db.chatSessions = [];
     db.chatSessions.push(newSession);
     writeDB(db);
-
     res.json({ success: true, session: newSession });
 });
 
@@ -965,7 +964,6 @@ app.put('/api/chat/sessions/:sessionId', (req, res) => {
     if (req.body.name !== undefined) db.chatSessions[idx].name = req.body.name;
     db.chatSessions[idx].updatedAt = new Date().toISOString();
     writeDB(db);
-
     res.json({ success: true, session: db.chatSessions[idx] });
 });
 
@@ -978,7 +976,6 @@ app.delete('/api/chat/sessions/:sessionId', (req, res) => {
     db.chatSessions = (db.chatSessions || []).filter(s => !(s.id === sessionId && s.userId === userId));
     db.chatMessages = (db.chatMessages || []).filter(m => !(m.sessionId === sessionId && m.userId === userId));
     writeDB(db);
-
     res.json({ success: true });
 });
 
@@ -1021,7 +1018,6 @@ app.post('/api/chat/sessions/:sessionId/messages', (req, res) => {
         db.chatSessions[sIdx].messageCount = db.chatMessages.filter(m => m.sessionId === sessionId).length;
     }
     writeDB(db);
-
     res.json({ success: true, message: newMessage });
 });
 
